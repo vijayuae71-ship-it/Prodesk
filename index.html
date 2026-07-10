@@ -64,14 +64,19 @@ function scheduleNotif(title,body,delayMs){
 function scheduleTaskReminder(task){
   if(!task.due||task.due==="TBD"||task.done)return;
   const due=new Date(task.due);
-  due.setHours(9,0,0,0);
+  const [h,m]=task.time?(task.time.split(":").map(Number)):[9,0];
+  due.setHours(h,m,0,0);
   const now=new Date();
+  // Remind 15 mins before
+  const remind=new Date(due-15*60*1000);
+  const delay=remind-now;
+  if(delay>0) scheduleNotif("📋 Task Starting Soon!",`"${task.title}" starts in 15 mins at ${task.time||"09:00"}`,delay);
+  // Remind day before at 9am
   const dayBefore=new Date(due);
   dayBefore.setDate(due.getDate()-1);
+  dayBefore.setHours(9,0,0,0);
   const d1=dayBefore-now;
-  const d2=due-now;
-  if(d1>0) scheduleNotif("📋 Task Due Tomorrow!",`"${task.title}" is due tomorrow.`,d1);
-  if(d2>0) scheduleNotif("🔴 Task Due Today!",`Don't forget: "${task.title}"`,d2);
+  if(d1>0) scheduleNotif("📋 Task Due Tomorrow!",`"${task.title}" is due tomorrow at ${task.time||"09:00"}`,d1);
 }
 
 function scheduleMeetingReminder(meeting){
@@ -247,7 +252,7 @@ function MainApp({user,onLogout}){
     ],
     meetings:[{id:1,time:"10:00",title:"Team Kickoff",people:4,color:C.blue}],
     team:[],
-    notifs:[{id:1,text:"Welcome to ProDesk! Your workspace is ready.",read:false}],
+    notifs:[],
   };
   const [tab,setTab]=useState(0);
   const [tasks,setTasksRaw]=useState(()=>(store.get(key)||defaults).tasks);
@@ -266,7 +271,7 @@ function MainApp({user,onLogout}){
   const [showNotifs,setShowNotifs]=useState(false);
   const [showProfile,setShowProfile]=useState(false);
   const [msgTarget,setMsgTarget]=useState(null);
-  const [nTitle,setNTitle]=useState("");const [nDue,setNDue]=useState("");const [nPri,setNPri]=useState("Medium");
+  const [nTitle,setNTitle]=useState("");const [nDue,setNDue]=useState("");const [nTime,setNTime]=useState("09:00");const [nPri,setNPri]=useState("Medium");
   const [mTitle,setMTitle]=useState("");const [mTime,setMTime]=useState("09:00");const [mPeople,setMPeople]=useState("2");
   const [mbName,setMbName]=useState("");const [mbRole,setMbRole]=useState("");
 
@@ -276,36 +281,44 @@ function MainApp({user,onLogout}){
   const initials=user.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
   const [notifEnabled,setNotifEnabled]=useState(Notification.permission==="granted");
 
-  // Register SW + request permission on load
+  // Register SW only on load
   useEffect(()=>{
     registerSW();
+    if(Notification.permission==="granted") setNotifEnabled(true);
+  },[]);
+
+  function enableNotifs(){
     requestNotifPermission(granted=>{
       setNotifEnabled(granted);
       if(granted){
         tasks.forEach(t=>scheduleTaskReminder(t));
         meetings.forEach(m=>scheduleMeetingReminder(m));
         sendNotif("⚡ ProDesk Ready!","Notifications enabled! You'll get task & meeting reminders.");
+      } else {
+        alert("Please allow notifications in your browser settings.");
       }
     });
-  },[]);
+  }
 
   function addTask(){
     if(!nTitle.trim())return;
-    const t={id:Date.now(),title:nTitle,due:nDue||"TBD",priority:nPri,done:false};
+    const t={id:Date.now(),title:nTitle,due:nDue||"TBD",time:nTime,priority:nPri,done:false};
     setTasks(ts=>[...ts,t]);
-    setNotifs(ns=>[{id:Date.now(),text:`Task "${nTitle}" added.`,read:false},...ns]);
+    const notif={id:Date.now(),text:`Task "${nTitle}" added.`,read:false};
+    setNotifs(ns=>[notif,...ns.slice(0,19)]);
     scheduleTaskReminder(t);
-    sendNotif("Task Added",`"${nTitle}" saved. You'll be reminded before it's due.`);
-    setNTitle("");setNDue("");setNPri("Medium");setShowTask(false);
+    sendNotif("📋 Task Added",`"${nTitle}" saved. Reminder set for ${nTime}.`);
+    setNTitle("");setNDue("");setNTime("09:00");setNPri("Medium");setShowTask(false);
   }
   function addMeeting(){
     if(!mTitle.trim())return;
     const cols=[C.blue,C.green,C.amber,C.navy,C.purple,C.cyan];
     const m={id:Date.now(),time:mTime,title:mTitle,people:parseInt(mPeople)||2,color:cols[meetings.length%cols.length]};
     setMeetings(ms=>[...ms,m]);
-    setNotifs(ns=>[{id:Date.now(),text:`Meeting "${mTitle}" scheduled.`,read:false},...ns]);
+    const notif={id:Date.now(),text:`Meeting "${mTitle}" at ${mTime} scheduled.`,read:false};
+    setNotifs(ns=>[notif,...ns.slice(0,19)]);
     scheduleMeetingReminder(m);
-    sendNotif("Meeting Scheduled",`"${mTitle}" at ${mTime}. You'll be reminded 15 mins before.`);
+    sendNotif("📅 Meeting Scheduled",`"${mTitle}" at ${mTime}. Reminder 15 mins before.`);
     setMTitle("");setMTime("09:00");setMPeople("2");setShowMeeting(false);
   }
   function addMember(){
@@ -313,7 +326,8 @@ function MainApp({user,onLogout}){
     const bgs=[C.purple,C.cyan,C.amber,C.green,C.red,C.blue];
     const init=mbName.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
     setTeam(tm=>[...tm,{id:Date.now(),name:mbName,role:mbRole||"Team Member",init,online:false,bg:bgs[tm.length%bgs.length]}]);
-    setNotifs(ns=>[{id:Date.now(),text:`${mbName} added to your team.`,read:false},...ns]);
+    const notif={id:Date.now(),text:`${mbName} added to your team.`,read:false};
+    setNotifs(ns=>[notif,...ns.slice(0,19)]);
     setMbName("");setMbRole("");setShowMember(false);
   }
 
@@ -326,6 +340,12 @@ function MainApp({user,onLogout}){
         <span style={{color:"#fff",fontSize:11,fontWeight:600}}>ProDesk</span>
         <span style={{color:"#fff",fontSize:11}}>⚡</span>
       </div>
+      {!notifEnabled&&(
+        <div style={{background:"#FEF3C7",padding:"10px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontSize:12,color:"#92400E",fontWeight:600}}>🔔 Enable notifications for reminders</span>
+          <button onClick={enableNotifs} style={{background:C.amber,color:"#fff",border:"none",borderRadius:8,padding:"6px 12px",fontSize:11,fontWeight:700,cursor:"pointer"}}>Enable</button>
+        </div>
+      )}
       <div style={{background:C.navy,padding:"12px 20px 20px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div>
@@ -550,6 +570,7 @@ function MainApp({user,onLogout}){
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <FInput placeholder="Task title" value={nTitle} onChange={setNTitle}/>
             <FInput placeholder="Due date" value={nDue} onChange={setNDue} type="date"/>
+            <FInput placeholder="Time" value={nTime} onChange={setNTime} type="time"/>
             <FSelect value={nPri} onChange={setNPri} options={["High","Medium","Low"]}/>
             <button onClick={addTask} style={sBtn(C.blue)}>Add Task</button>
           </div>
