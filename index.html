@@ -4,6 +4,12 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>ProDesk</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0A1F44">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ProDesk">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -21,65 +27,52 @@ input,select,button{font-family:inherit;}
 const {useState,useEffect}=React;
 
 // ── Service Worker + Push Notifications ──────────────────────────────────────
-function registerSW(){
-  if('serviceWorker' in navigator){
-    navigator.serviceWorker.register('/sw.js')
-      .then(reg=>{
-        console.log('SW registered');
-        window._swReg=reg;
-      })
-      .catch(e=>console.log('SW error',e));
-  }
-}
-
-function requestNotifPermission(cb){
-  if(!("Notification" in window)){cb(false);return;}
-  if(Notification.permission==="granted"){cb(true);return;}
-  Notification.requestPermission().then(p=>cb(p==="granted"));
-}
-
-function sendNotif(title,body){
-  if(Notification.permission!=="granted")return;
-  if(window._swReg){
-    window._swReg.showNotification(title,{
-      body,
-      icon:'https://myprodesk.netlify.app/icon.png',
-      vibrate:[200,100,200],
-      requireInteraction:true,
-      data:{body},
-      actions:[
-        {action:'snooze',title:'⏰ Snooze 15 min'},
-        {action:'dismiss',title:'✕ Dismiss'}
-      ]
+// ── Beep Sound ───────────────────────────────────────────────────────────────
+function playBeep(){
+  try{
+    const ctx=new(window.AudioContext||window.webkitAudioContext)();
+    [0,300,600].forEach(delay=>{
+      const o=ctx.createOscillator();
+      const g=ctx.createGain();
+      o.connect(g);g.connect(ctx.destination);
+      o.frequency.value=880;
+      o.type='sine';
+      g.gain.setValueAtTime(0.3,ctx.currentTime+delay/1000);
+      g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+delay/1000+0.3);
+      o.start(ctx.currentTime+delay/1000);
+      o.stop(ctx.currentTime+delay/1000+0.3);
     });
-  } else {
-    new Notification(title,{body});
+  }catch(e){}
+}
+
+// ── Alarm Scheduler ───────────────────────────────────────────────────────────
+const alarmTimers=[];
+function clearAlarms(){alarmTimers.forEach(t=>clearTimeout(t));alarmTimers.length=0;}
+
+function scheduleAlarm(title,body,delayMs,onAlarm){
+  if(delayMs>0){
+    const t=setTimeout(()=>{playBeep();onAlarm(title,body);},delayMs);
+    alarmTimers.push(t);
   }
 }
 
-function scheduleNotif(title,body,delayMs){
-  if(delayMs>0) setTimeout(()=>sendNotif(title,body),delayMs);
-}
-
-function scheduleTaskReminder(task){
+function scheduleTaskReminder(task,onAlarm){
   if(!task.due||task.due==="TBD"||task.done)return;
   const due=new Date(task.due);
   const [h,m]=task.time?(task.time.split(":").map(Number)):[9,0];
   due.setHours(h,m,0,0);
   const now=new Date();
-  // Remind 15 mins before
   const remind=new Date(due-15*60*1000);
   const delay=remind-now;
-  if(delay>0) scheduleNotif("📋 Task Starting Soon!",`"${task.title}" starts in 15 mins at ${task.time||"09:00"}`,delay);
-  // Remind day before at 9am
+  if(delay>0) scheduleAlarm("📋 Task Starting Soon!",`"${task.title}" starts in 15 mins at ${task.time||"09:00"}`,delay,onAlarm);
   const dayBefore=new Date(due);
   dayBefore.setDate(due.getDate()-1);
   dayBefore.setHours(9,0,0,0);
   const d1=dayBefore-now;
-  if(d1>0) scheduleNotif("📋 Task Due Tomorrow!",`"${task.title}" is due tomorrow at ${task.time||"09:00"}`,d1);
+  if(d1>0) scheduleAlarm("📋 Task Due Tomorrow!",`"${task.title}" is due tomorrow at ${task.time||"09:00"}`,d1,onAlarm);
 }
 
-function scheduleMeetingReminder(meeting){
+function scheduleMeetingReminder(meeting,onAlarm){
   if(!meeting.time)return;
   const now=new Date();
   const t=new Date();
@@ -87,7 +80,7 @@ function scheduleMeetingReminder(meeting){
   t.setHours(h,m,0,0);
   const remind=new Date(t-15*60*1000);
   const delay=remind-now;
-  if(delay>0) scheduleNotif("📅 Meeting in 15 mins!",`"${meeting.title}" starts at ${meeting.time}`,delay);
+  if(delay>0) scheduleAlarm("📅 Meeting in 15 mins!",`"${meeting.title}" starts at ${meeting.time}`,delay,onAlarm);
 }
 
 
