@@ -13,6 +13,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-auth-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-firestore-compat.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
 body{background:#CBD5E1;font-family:'Inter',system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:0;}
@@ -22,6 +25,19 @@ input,select,button{font-family:inherit;}
 </head>
 <body>
 <div id="root"></div>
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyB_L65j911L5As6Lhjwm97xzXP8BPSBrbY",
+  authDomain: "myprodesk-63603.firebaseapp.com",
+  projectId: "myprodesk-63603",
+  storageBucket: "myprodesk-63603.firebasestorage.app",
+  messagingSenderId: "113573306239",
+  appId: "1:113573306239:web:58d9a1fedc0882413b844a"
+};
+firebase.initializeApp(firebaseConfig);
+window._auth = firebase.auth();
+window._db = firebase.firestore();
+</script>
 <script type="text/babel">
 const {useState,useEffect}=React;
 
@@ -34,14 +50,14 @@ const C={
 const PRI={High:{bg:C.redBg,col:C.red},Medium:{bg:C.amberBg,col:C.amber},Low:{bg:C.greenBg,col:C.green}};
 const DAYS=["M","T","W","T","F","S","S"];
 const CAL=["","","","","","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","23","24","25","26","27","28","29","30","31"];
+const REPEAT_OPTS=["None","Daily","Weekly","Monthly"];
 
-const store={
+const localStore={
   get:(k)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch{return null;}},
   set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}},
   del:(k)=>{try{localStorage.removeItem(k);}catch{}},
 };
 
-// ── Beep Sound ───────────────────────────────────────────────────────────────
 function playBeep(){
   try{
     const ctx=new(window.AudioContext||window.webkitAudioContext)();
@@ -58,18 +74,25 @@ function playBeep(){
     });
   }catch(e){}
 }
-
-// ── Alarm Scheduler ───────────────────────────────────────────────────────────
+function tryRealNotification(title,body){
+  if("Notification" in window && Notification.permission==="granted"){
+    try{ new Notification(title,{body,tag:"prodesk-"+Date.now()}); }catch(e){}
+  }
+}
+function requestNotifPermission(cb){
+  if(!("Notification" in window)){cb(false);return;}
+  if(Notification.permission==="granted"){cb(true);return;}
+  if(Notification.permission==="denied"){cb(false);return;}
+  Notification.requestPermission().then(p=>cb(p==="granted"));
+}
 const alarmTimers=[];
 function clearAlarms(){alarmTimers.forEach(t=>clearTimeout(t));alarmTimers.length=0;}
-
 function scheduleAlarm(title,body,delayMs,onAlarm){
   if(delayMs>0){
-    const t=setTimeout(()=>{playBeep();onAlarm(title,body);},delayMs);
+    const t=setTimeout(()=>{playBeep();tryRealNotification(title,body);onAlarm(title,body);},delayMs);
     alarmTimers.push(t);
   }
 }
-
 function scheduleTaskReminder(task,onAlarm){
   if(!task.due||task.due==="TBD"||task.done)return;
   const due=new Date(task.due);
@@ -85,7 +108,6 @@ function scheduleTaskReminder(task,onAlarm){
   const d1=dayBefore-now;
   if(d1>0) scheduleAlarm("📋 Task Due Tomorrow!",`"${task.title}" is due tomorrow at ${task.time||"09:00"}`,d1,onAlarm);
 }
-
 function scheduleMeetingReminder(meeting,onAlarm){
   if(!meeting.time)return;
   const now=new Date();
@@ -96,6 +118,15 @@ function scheduleMeetingReminder(meeting,onAlarm){
   const delay=remind-now;
   if(delay>0) scheduleAlarm("📅 Meeting in 15 mins!",`"${meeting.title}" starts at ${meeting.time}`,delay,onAlarm);
 }
+function nextOccurrence(dateStr,repeat){
+  const d=new Date(dateStr);
+  if(repeat==="Daily") d.setDate(d.getDate()+1);
+  else if(repeat==="Weekly") d.setDate(d.getDate()+7);
+  else if(repeat==="Monthly") d.setMonth(d.getMonth()+1);
+  else return null;
+  return d.toISOString().slice(0,10);
+}
+function waLink(text){return "https://wa.me/?text="+encodeURIComponent(text);}
 
 function Avatar({init,size=36,bg=C.navy}){
   return <div style={{width:size,height:size,borderRadius:"50%",background:bg,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*0.36,fontWeight:700,flexShrink:0}}>{init}</div>;
@@ -106,7 +137,7 @@ function Badge({label,bg,col}){
 function Modal({title,onClose,children}){
   return(
     <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.5)",zIndex:100,display:"flex",alignItems:"flex-end"}}>
-      <div style={{background:C.white,borderRadius:"20px 20px 0 0",width:"100%",padding:20,boxShadow:"0 -4px 24px rgba(0,0,0,0.15)"}}>
+      <div style={{background:C.white,borderRadius:"20px 20px 0 0",width:"100%",padding:20,boxShadow:"0 -4px 24px rgba(0,0,0,0.15)",maxHeight:"85vh",overflowY:"auto"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
           <span style={{fontWeight:700,fontSize:15,color:C.text}}>{title}</span>
           <button onClick={onClose} style={{background:C.slateLight,border:"none",borderRadius:"50%",width:28,height:28,cursor:"pointer",color:C.muted,fontSize:13}}>✕</button>
@@ -124,6 +155,7 @@ function FSelect({value,onChange,options}){
 }
 const sBtn=(bg,col="#fff")=>({background:bg,color:col,border:"none",borderRadius:12,padding:"13px",cursor:"pointer",fontWeight:700,fontSize:13,width:"100%"});
 const smBtn=(bg,col)=>({background:bg,color:col,border:"none",borderRadius:8,padding:"5px 12px",fontSize:11,fontWeight:700,cursor:"pointer"});
+const iconBtn={background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:14,padding:"4px 6px"};
 
 function Onboarding({onDone}){
   const [step,setStep]=useState(0);
@@ -153,28 +185,27 @@ function Onboarding({onDone}){
   );
 }
 
-function Auth({onLogin}){
+function Auth(){
   const [mode,setMode]=useState("login");
   const [name,setName]=useState("");
   const [email,setEmail]=useState("");
   const [pass,setPass]=useState("");
   const [err,setErr]=useState("");
+  const [busy,setBusy]=useState(false);
 
   function handleSubmit(){
     setErr("");
     if(!email.trim()||!pass.trim()){setErr("Please fill all fields.");return;}
     if(mode==="signup"&&!name.trim()){setErr("Please enter your name.");return;}
     if(pass.length<6){setErr("Password must be at least 6 characters.");return;}
-    const users=store.get("pd_users")||{};
+    setBusy(true);
     if(mode==="signup"){
-      if(users[email]){setErr("Account already exists. Please sign in.");return;}
-      const user={name:name.trim(),email};
-      users[email]={...user,pass};
-      store.set("pd_users",users);
-      onLogin(user);
+      window._auth.createUserWithEmailAndPassword(email,pass)
+        .then(cred=>cred.user.updateProfile({displayName:name.trim()}))
+        .catch(e=>{setErr(e.message);setBusy(false);});
     } else {
-      if(!users[email]||users[email].pass!==pass){setErr("Invalid email or password.");return;}
-      onLogin({name:users[email].name,email});
+      window._auth.signInWithEmailAndPassword(email,pass)
+        .catch(e=>{setErr(e.message);setBusy(false);});
     }
   }
 
@@ -183,7 +214,7 @@ function Auth({onLogin}){
       <div style={{background:C.navy,padding:"48px 32px 32px",textAlign:"center"}}>
         <div style={{fontSize:40,marginBottom:8}}>⚡</div>
         <h1 style={{color:"#fff",margin:0,fontSize:28,fontWeight:800}}>ProDesk</h1>
-        <p style={{color:"#94A3B8",margin:"6px 0 0",fontSize:12}}>Your personal productivity workspace</p>
+        <p style={{color:"#94A3B8",margin:"6px 0 0",fontSize:12}}>Cloud-synced productivity workspace</p>
       </div>
       <div style={{flex:1,padding:24,display:"flex",flexDirection:"column",gap:12}}>
         <div style={{display:"flex",background:C.slateLight,borderRadius:12,padding:4}}>
@@ -197,22 +228,22 @@ function Auth({onLogin}){
         <FInput placeholder="Email address" value={email} onChange={setEmail} type="email"/>
         <FInput placeholder="Password (min 6 chars)" value={pass} onChange={setPass} type="password"/>
         {err&&<div style={{background:C.redBg,color:C.red,padding:"8px 12px",borderRadius:8,fontSize:12,fontWeight:600}}>{err}</div>}
-        <button onClick={handleSubmit} style={{...sBtn(C.blue),marginTop:4}}>{mode==="login"?"Sign In":"Create Account"}</button>
-        <p style={{color:C.muted,fontSize:11,textAlign:"center",margin:0}}>Your data is saved privately on this device.</p>
+        <button onClick={handleSubmit} disabled={busy} style={{...sBtn(C.blue),marginTop:4,opacity:busy?0.6:1}}>{busy?"Please wait...":(mode==="login"?"Sign In":"Create Account")}</button>
+        <p style={{color:C.muted,fontSize:11,textAlign:"center",margin:0}}>☁️ Your data syncs securely across all your devices.</p>
       </div>
     </div>
   );
 }
 
-function MsgModal({member,userEmail,onClose}){
-  const key="pd_msg_"+userEmail+"_"+member.id;
+function MsgModal({member,userUid,onClose}){
+  const key="pd_msg_"+userUid+"_"+member.id;
   const [input,setInput]=useState("");
-  const [convo,setConvo]=useState(()=>store.get(key)||[]);
+  const [convo,setConvo]=useState(()=>localStore.get(key)||[]);
   function send(){
     if(!input.trim())return;
     const msg={text:input,time:new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})};
     const updated=[...convo,msg];
-    setConvo(updated);store.set(key,updated);setInput("");
+    setConvo(updated);localStore.set(key,updated);setInput("");
   }
   return(
     <Modal title={"Message "+member.name} onClose={onClose}>
@@ -234,26 +265,48 @@ function MsgModal({member,userEmail,onClose}){
 }
 
 function MainApp({user,onLogout}){
-  const key="pd_data_"+user.email;
   const defaults={
     tasks:[
-      {id:1,title:"Review onboarding docs",due:"2026-03-09",time:"09:00",priority:"High",done:false},
-      {id:2,title:"Set up your team",due:"2026-03-10",time:"09:00",priority:"Medium",done:false},
+      {id:1,title:"Review onboarding docs",due:"2026-03-09",time:"09:00",priority:"High",done:false,repeat:"None"},
+      {id:2,title:"Set up your team",due:"2026-03-10",time:"09:00",priority:"Medium",done:false,repeat:"None"},
     ],
-    meetings:[{id:1,time:"10:00",title:"Team Kickoff",people:4,color:C.blue}],
+    meetings:[{id:1,time:"10:00",title:"Team Kickoff",people:4,color:C.blue,repeat:"None"}],
     team:[],
     notifs:[],
   };
   const [tab,setTab]=useState(0);
-  const [tasks,setTasksRaw]=useState(()=>(store.get(key)||defaults).tasks);
-  const [meetings,setMeetingsRaw]=useState(()=>(store.get(key)||defaults).meetings);
-  const [team,setTeamRaw]=useState(()=>(store.get(key)||defaults).team);
-  const [notifs,setNotifsRaw]=useState(()=>(store.get(key)||defaults).notifs);
+  const [loaded,setLoaded]=useState(false);
+  const [tasks,setTasksRaw]=useState(defaults.tasks);
+  const [meetings,setMeetingsRaw]=useState(defaults.meetings);
+  const [team,setTeamRaw]=useState(defaults.team);
+  const [notifs,setNotifsRaw]=useState(defaults.notifs);
 
-  function setTasks(fn){setTasksRaw(prev=>{const next=fn(prev);store.set(key,{tasks:next,meetings,team,notifs});return next;});}
-  function setMeetings(fn){setMeetingsRaw(prev=>{const next=fn(prev);store.set(key,{tasks,meetings:next,team,notifs});return next;});}
-  function setTeam(fn){setTeamRaw(prev=>{const next=fn(prev);store.set(key,{tasks,meetings,team:next,notifs});return next;});}
-  function setNotifs(fn){setNotifsRaw(prev=>{const next=fn(prev);store.set(key,{tasks,meetings,team,notifs:next});return next;});}
+  const docRef=window._db.collection("prodesk_users").doc(user.uid);
+
+  // Real-time Firestore sync
+  useEffect(()=>{
+    const unsub=docRef.onSnapshot(snap=>{
+      if(snap.exists){
+        const d=snap.data();
+        setTasksRaw(d.tasks||defaults.tasks);
+        setMeetingsRaw(d.meetings||defaults.meetings);
+        setTeamRaw(d.team||defaults.team);
+        setNotifsRaw(d.notifs||defaults.notifs);
+      } else {
+        docRef.set(defaults);
+      }
+      setLoaded(true);
+    },err=>{console.log("Firestore error",err);setLoaded(true);});
+    return unsub;
+  },[]);
+
+  function saveAll(next){
+    docRef.set(next,{merge:true}).catch(e=>console.log("save err",e));
+  }
+  function setTasks(fn){setTasksRaw(prev=>{const next=fn(prev);saveAll({tasks:next});return next;});}
+  function setMeetings(fn){setMeetingsRaw(prev=>{const next=fn(prev);saveAll({meetings:next});return next;});}
+  function setTeam(fn){setTeamRaw(prev=>{const next=fn(prev);saveAll({team:next});return next;});}
+  function setNotifs(fn){setNotifsRaw(prev=>{const next=fn(prev);saveAll({notifs:next});return next;});}
 
   const [showTask,setShowTask]=useState(false);
   const [showMeeting,setShowMeeting]=useState(false);
@@ -261,19 +314,34 @@ function MainApp({user,onLogout}){
   const [showNotifs,setShowNotifs]=useState(false);
   const [showProfile,setShowProfile]=useState(false);
   const [msgTarget,setMsgTarget]=useState(null);
-  const [nTitle,setNTitle]=useState("");const [nDue,setNDue]=useState("");const [nTime,setNTime]=useState("09:00");const [nPri,setNPri]=useState("Medium");
-  const [mTitle,setMTitle]=useState("");const [mTime,setMTime]=useState("09:00");const [mPeople,setMPeople]=useState("2");
+
+  const [editTaskId,setEditTaskId]=useState(null);
+  const [editMeetingId,setEditMeetingId]=useState(null);
+  const [editMemberId,setEditMemberId]=useState(null);
+
+  const [nTitle,setNTitle]=useState("");const [nDue,setNDue]=useState("");const [nTime,setNTime]=useState("09:00");const [nPri,setNPri]=useState("Medium");const [nRepeat,setNRepeat]=useState("None");
+  const [mTitle,setMTitle]=useState("");const [mTime,setMTime]=useState("09:00");const [mPeople,setMPeople]=useState("2");const [mRepeat,setMRepeat]=useState("None");
   const [mbName,setMbName]=useState("");const [mbRole,setMbRole]=useState("");
 
+  const [search,setSearch]=useState("");
+  const [filterPri,setFilterPri]=useState("All");
+
   const [alarm,setAlarm]=useState(null);
+  const [notifStatus,setNotifStatus]=useState(("Notification" in window)?Notification.permission:"unsupported");
 
   function onAlarm(title,body){setAlarm({title,body});}
   function snoozeAlarm(){
     const a=alarm;
     setAlarm(null);
-    setTimeout(()=>{playBeep();setAlarm(a);},15*60*1000);
+    setTimeout(()=>{playBeep();tryRealNotification(a.title,a.body);setAlarm(a);},15*60*1000);
   }
   function dismissAlarm(){setAlarm(null);}
+  function enableNotifs(){
+    requestNotifPermission(granted=>{
+      setNotifStatus(granted?"granted":"denied");
+      if(granted) tryRealNotification("⚡ ProDesk","Notifications enabled!");
+    });
+  }
 
   useEffect(()=>{
     clearAlarms();
@@ -285,44 +353,98 @@ function MainApp({user,onLogout}){
   const unread=notifs.filter(n=>!n.read).length;
   const doneTasks=tasks.filter(t=>t.done).length;
   const openTasks=tasks.filter(t=>!t.done).length;
+  const completionRate=tasks.length?Math.round((doneTasks/tasks.length)*100):0;
+  const priCounts={High:tasks.filter(t=>t.priority==="High"&&!t.done).length,Medium:tasks.filter(t=>t.priority==="Medium"&&!t.done).length,Low:tasks.filter(t=>t.priority==="Low"&&!t.done).length};
   const initials=user.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
 
-  function addTask(){
+  function openNewTask(){setEditTaskId(null);setNTitle("");setNDue("");setNTime("09:00");setNPri("Medium");setNRepeat("None");setShowTask(true);}
+  function openEditTask(t){setEditTaskId(t.id);setNTitle(t.title);setNDue(t.due==="TBD"?"":t.due);setNTime(t.time||"09:00");setNPri(t.priority);setNRepeat(t.repeat||"None");setShowTask(true);}
+  function saveTask(){
     if(!nTitle.trim())return;
-    const t={id:Date.now(),title:nTitle,due:nDue||"TBD",time:nTime,priority:nPri,done:false};
-    setTasks(ts=>[...ts,t]);
-    const notif={id:Date.now(),text:`Task "${nTitle}" added.`,read:false};
-    setNotifs(ns=>[notif,...ns.slice(0,19)]);
-    setNTitle("");setNDue("");setNTime("09:00");setNPri("Medium");setShowTask(false);
+    if(editTaskId){
+      setTasks(ts=>ts.map(t=>t.id===editTaskId?{...t,title:nTitle,due:nDue||"TBD",time:nTime,priority:nPri,repeat:nRepeat}:t));
+      setNotifs(ns=>[{id:Date.now(),text:`Task "${nTitle}" updated.`,read:false},...ns.slice(0,19)]);
+    } else {
+      const t={id:Date.now(),title:nTitle,due:nDue||"TBD",time:nTime,priority:nPri,done:false,repeat:nRepeat};
+      setTasks(ts=>[...ts,t]);
+      setNotifs(ns=>[{id:Date.now(),text:`Task "${nTitle}" added.`,read:false},...ns.slice(0,19)]);
+    }
+    setShowTask(false);setEditTaskId(null);
   }
-  function addMeeting(){
+  function toggleTaskDone(t){
+    setTasks(ts=>ts.map(x=>x.id===t.id?{...x,done:!x.done}:x));
+    if(!t.done && t.repeat && t.repeat!=="None" && t.due && t.due!=="TBD"){
+      const next=nextOccurrence(t.due,t.repeat);
+      if(next){
+        setTasks(ts=>[...ts,{id:Date.now(),title:t.title,due:next,time:t.time,priority:t.priority,done:false,repeat:t.repeat}]);
+        setNotifs(ns=>[{id:Date.now(),text:`Next "${t.title}" scheduled for ${next}.`,read:false},...ns.slice(0,19)]);
+      }
+    }
+  }
+
+  function openNewMeeting(){setEditMeetingId(null);setMTitle("");setMTime("09:00");setMPeople("2");setMRepeat("None");setShowMeeting(true);}
+  function openEditMeeting(m){setEditMeetingId(m.id);setMTitle(m.title);setMTime(m.time);setMPeople(String(m.people));setMRepeat(m.repeat||"None");setShowMeeting(true);}
+  function saveMeeting(){
     if(!mTitle.trim())return;
-    const cols=[C.blue,C.green,C.amber,C.navy,C.purple,C.cyan];
-    const m={id:Date.now(),time:mTime,title:mTitle,people:parseInt(mPeople)||2,color:cols[meetings.length%cols.length]};
-    setMeetings(ms=>[...ms,m]);
-    const notif={id:Date.now(),text:`Meeting "${mTitle}" at ${mTime} scheduled.`,read:false};
-    setNotifs(ns=>[notif,...ns.slice(0,19)]);
-    setMTitle("");setMTime("09:00");setMPeople("2");setShowMeeting(false);
+    if(editMeetingId){
+      setMeetings(ms=>ms.map(m=>m.id===editMeetingId?{...m,title:mTitle,time:mTime,people:parseInt(mPeople)||2,repeat:mRepeat}:m));
+      setNotifs(ns=>[{id:Date.now(),text:`Meeting "${mTitle}" updated.`,read:false},...ns.slice(0,19)]);
+    } else {
+      const cols=[C.blue,C.green,C.amber,C.navy,C.purple,C.cyan];
+      const m={id:Date.now(),time:mTime,title:mTitle,people:parseInt(mPeople)||2,color:cols[meetings.length%cols.length],repeat:mRepeat};
+      setMeetings(ms=>[...ms,m]);
+      setNotifs(ns=>[{id:Date.now(),text:`Meeting "${mTitle}" at ${mTime} scheduled.`,read:false},...ns.slice(0,19)]);
+    }
+    setShowMeeting(false);setEditMeetingId(null);
   }
-  function addMember(){
+
+  function openNewMember(){setEditMemberId(null);setMbName("");setMbRole("");setShowMember(true);}
+  function openEditMember(m){setEditMemberId(m.id);setMbName(m.name);setMbRole(m.role);setShowMember(true);}
+  function saveMember(){
     if(!mbName.trim())return;
-    const bgs=[C.purple,C.cyan,C.amber,C.green,C.red,C.blue];
-    const init=mbName.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
-    setTeam(tm=>[...tm,{id:Date.now(),name:mbName,role:mbRole||"Team Member",init,online:false,bg:bgs[tm.length%bgs.length]}]);
-    const notif={id:Date.now(),text:`${mbName} added to your team.`,read:false};
-    setNotifs(ns=>[notif,...ns.slice(0,19)]);
-    setMbName("");setMbRole("");setShowMember(false);
+    if(editMemberId){
+      const init=mbName.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
+      setTeam(tm=>tm.map(m=>m.id===editMemberId?{...m,name:mbName,role:mbRole||"Team Member",init}:m));
+      setNotifs(ns=>[{id:Date.now(),text:`${mbName}'s profile updated.`,read:false},...ns.slice(0,19)]);
+    } else {
+      const bgs=[C.purple,C.cyan,C.amber,C.green,C.red,C.blue];
+      const init=mbName.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
+      setTeam(tm=>[...tm,{id:Date.now(),name:mbName,role:mbRole||"Team Member",init,online:false,bg:bgs[tm.length%bgs.length]}]);
+      setNotifs(ns=>[{id:Date.now(),text:`${mbName} added to your team.`,read:false},...ns.slice(0,19)]);
+    }
+    setShowMember(false);setEditMemberId(null);
   }
 
   const card={background:C.white,borderRadius:16,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:`1px solid ${C.border}`,marginBottom:12};
   const row={display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12};
 
+  const filteredTasks=tasks.filter(t=>{
+    const matchSearch=t.title.toLowerCase().includes(search.toLowerCase());
+    const matchPri=filterPri==="All"||t.priority===filterPri;
+    return matchSearch&&matchPri;
+  });
+
+  if(!loaded){
+    return(
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",flexDirection:"column",gap:12,background:C.white}}>
+        <div style={{fontSize:36}}>☁️</div>
+        <p style={{color:C.muted,fontSize:13}}>Syncing your workspace...</p>
+      </div>
+    );
+  }
+
   return(
     <div style={{display:"flex",flexDirection:"column",height:"100%",position:"relative"}}>
       <div style={{background:C.navy,padding:"10px 24px 6px",display:"flex",justifyContent:"space-between"}}>
-        <span style={{color:"#fff",fontSize:11,fontWeight:600}}>ProDesk</span>
+        <span style={{color:"#fff",fontSize:11,fontWeight:600}}>ProDesk ☁️</span>
         <span style={{color:"#fff",fontSize:11}}>⚡</span>
       </div>
+      {notifStatus!=="granted"&&notifStatus!=="unsupported"&&(
+        <div style={{background:"#FEF3C7",padding:"10px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontSize:11,color:"#92400E",fontWeight:600}}>🔔 Get real phone alerts too</span>
+          <button onClick={enableNotifs} style={{background:C.amber,color:"#fff",border:"none",borderRadius:8,padding:"6px 12px",fontSize:11,fontWeight:700,cursor:"pointer"}}>Enable</button>
+        </div>
+      )}
       <div style={{background:C.navy,padding:"12px 20px 20px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div>
@@ -362,17 +484,35 @@ function MainApp({user,onLogout}){
           <div>
             <div style={card}>
               <div style={row}>
+                <span style={{fontSize:13,fontWeight:700,color:C.text}}>Task Completion</span>
+                <span style={{fontSize:13,fontWeight:800,color:C.blue}}>{completionRate}%</span>
+              </div>
+              <div style={{background:C.slateLight,borderRadius:8,height:10,overflow:"hidden",marginBottom:14}}>
+                <div style={{background:C.blue,height:"100%",width:completionRate+"%",borderRadius:8,transition:"width 0.3s"}}/>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                {["High","Medium","Low"].map(p=>(
+                  <div key={p} style={{flex:1,background:PRI[p].bg,borderRadius:10,padding:"8px 6px",textAlign:"center"}}>
+                    <div style={{fontSize:16,fontWeight:800,color:PRI[p].col}}>{priCounts[p]}</div>
+                    <div style={{fontSize:9,color:PRI[p].col,fontWeight:700,textTransform:"uppercase"}}>{p}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={card}>
+              <div style={row}>
                 <span style={{fontSize:13,fontWeight:700,color:C.text}}>Priority Tasks</span>
                 <button onClick={()=>setTab(1)} style={{fontSize:11,color:C.blue,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>View All</button>
               </div>
-              {tasks.filter(t=>t.priority==="High").length===0&&<p style={{fontSize:12,color:C.muted,textAlign:"center",padding:"8px 0"}}>No high priority tasks!</p>}
-              {tasks.filter(t=>t.priority==="High").map(t=>(
+              {tasks.filter(t=>t.priority==="High"&&!t.done).length===0&&<p style={{fontSize:12,color:C.muted,textAlign:"center",padding:"8px 0"}}>No high priority tasks!</p>}
+              {tasks.filter(t=>t.priority==="High"&&!t.done).map(t=>(
                 <div key={t.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
-                  <div onClick={()=>setTasks(ts=>ts.map(x=>x.id===t.id?{...x,done:!x.done}:x))} style={{width:18,height:18,borderRadius:5,border:`2px solid ${t.done?C.blue:C.border}`,background:t.done?C.blue:"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
+                  <div onClick={()=>toggleTaskDone(t)} style={{width:18,height:18,borderRadius:5,border:`2px solid ${t.done?C.blue:C.border}`,background:t.done?C.blue:"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
                     {t.done&&<span style={{color:"#fff",fontSize:10}}>✓</span>}
                   </div>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:12.5,fontWeight:600,color:t.done?C.muted:C.text,textDecoration:t.done?"line-through":"none"}}>{t.title}</div>
+                  <div style={{flex:1}} onClick={()=>openEditTask(t)}>
+                    <div style={{fontSize:12.5,fontWeight:600,color:t.done?C.muted:C.text,textDecoration:t.done?"line-through":"none"}}>{t.title}{t.repeat&&t.repeat!=="None"?" 🔁":""}</div>
                     <div style={{fontSize:10.5,color:C.muted,marginTop:1}}>Due {t.due} {t.time?"· "+t.time:""}</div>
                   </div>
                   <Badge label={t.priority} bg={PRI[t.priority].bg} col={PRI[t.priority].col}/>
@@ -382,14 +522,14 @@ function MainApp({user,onLogout}){
             <div style={card}>
               <div style={row}>
                 <span style={{fontSize:13,fontWeight:700,color:C.text}}>Today's Schedule</span>
-                <button onClick={()=>setShowMeeting(true)} style={{fontSize:11,color:C.blue,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>+ Add</button>
+                <button onClick={openNewMeeting} style={{fontSize:11,color:C.blue,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>+ Add</button>
               </div>
               {meetings.length===0&&<p style={{fontSize:12,color:C.muted,textAlign:"center",padding:"8px 0"}}>No meetings today.</p>}
               {meetings.slice(0,3).map(m=>(
                 <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
                   <div style={{width:3,height:36,borderRadius:4,background:m.color,flexShrink:0}}/>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:12.5,fontWeight:600,color:C.text}}>{m.title}</div>
+                  <div style={{flex:1}} onClick={()=>openEditMeeting(m)}>
+                    <div style={{fontSize:12.5,fontWeight:600,color:C.text}}>{m.title}{m.repeat&&m.repeat!=="None"?" 🔁":""}</div>
                     <div style={{fontSize:10.5,color:C.muted}}>{m.time} · {m.people} attendees</div>
                   </div>
                   <button style={smBtn(C.blueLight,C.blue)}>Join</button>
@@ -400,9 +540,9 @@ function MainApp({user,onLogout}){
               <span style={{fontSize:13,fontWeight:700,color:C.text}}>Quick Actions</span>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:12}}>
                 {[
-                  {icon:"📋",label:"New Task",bg:C.blueLight,col:C.blue,action:()=>setShowTask(true)},
-                  {icon:"📅",label:"Schedule",bg:"#F0FDF4",col:C.green,action:()=>setShowMeeting(true)},
-                  {icon:"👥",label:"Add Member",bg:"#F5F3FF",col:C.purple,action:()=>setShowMember(true)},
+                  {icon:"📋",label:"New Task",bg:C.blueLight,col:C.blue,action:openNewTask},
+                  {icon:"📅",label:"Schedule",bg:"#F0FDF4",col:C.green,action:openNewMeeting},
+                  {icon:"👥",label:"Add Member",bg:"#F5F3FF",col:C.purple,action:openNewMember},
                   {icon:"👤",label:"Profile",bg:C.amberBg,col:C.amber,action:()=>setShowProfile(true)},
                 ].map((a,i)=>(
                   <button key={i} onClick={a.action} style={{background:a.bg,border:`1px solid ${a.col}22`,borderRadius:12,padding:"12px",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
@@ -417,22 +557,30 @@ function MainApp({user,onLogout}){
 
         {tab===1&&(
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
               <span style={{fontSize:14,fontWeight:700,color:C.text}}>{openTasks} Open Tasks</span>
-              <button onClick={()=>setShowTask(true)} style={{background:C.blue,color:"#fff",border:"none",borderRadius:10,padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>+ New</button>
+              <button onClick={openNewTask} style={{background:C.blue,color:"#fff",border:"none",borderRadius:10,padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>+ New</button>
             </div>
-            {tasks.length===0&&<div style={{...card,textAlign:"center",padding:32}}><div style={{fontSize:32}}>📋</div><p style={{color:C.muted,fontSize:13,marginTop:8}}>No tasks yet!</p></div>}
-            {tasks.map(t=>(
-              <div key={t.id} style={{background:C.white,borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:12,marginBottom:10,opacity:t.done?0.6:1}}>
-                <div onClick={()=>setTasks(ts=>ts.map(x=>x.id===t.id?{...x,done:!x.done}:x))} style={{width:20,height:20,borderRadius:6,border:`2px solid ${t.done?C.blue:C.border}`,background:t.done?C.blue:"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search tasks..." style={{flex:1,padding:"9px 12px",borderRadius:10,border:`1px solid ${C.border}`,fontSize:12,background:C.white,outline:"none"}}/>
+              <select value={filterPri} onChange={e=>setFilterPri(e.target.value)} style={{padding:"9px 10px",borderRadius:10,border:`1px solid ${C.border}`,fontSize:12,background:C.white,outline:"none"}}>
+                {["All","High","Medium","Low"].map(o=><option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            {filteredTasks.length===0&&<div style={{...card,textAlign:"center",padding:32}}><div style={{fontSize:32}}>📋</div><p style={{color:C.muted,fontSize:13,marginTop:8}}>No matching tasks.</p></div>}
+            {filteredTasks.map(t=>(
+              <div key={t.id} style={{background:C.white,borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:6,marginBottom:10,opacity:t.done?0.6:1}}>
+                <div onClick={()=>toggleTaskDone(t)} style={{width:20,height:20,borderRadius:6,border:`2px solid ${t.done?C.blue:C.border}`,background:t.done?C.blue:"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
                   {t.done&&<span style={{color:"#fff",fontSize:11}}>✓</span>}
                 </div>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:600,color:C.text,textDecoration:t.done?"line-through":"none"}}>{t.title}</div>
+                <div style={{flex:1,minWidth:0}} onClick={()=>openEditTask(t)}>
+                  <div style={{fontSize:13,fontWeight:600,color:C.text,textDecoration:t.done?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.title}{t.repeat&&t.repeat!=="None"?" 🔁":""}</div>
                   <div style={{fontSize:11,color:C.muted,marginTop:2}}>Due {t.due} {t.time?"· "+t.time:""}</div>
                 </div>
                 <Badge label={t.priority} bg={PRI[t.priority].bg} col={PRI[t.priority].col}/>
-                <button onClick={()=>setTasks(ts=>ts.filter(x=>x.id!==t.id))} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:13}}>✕</button>
+                <a href={waLink(`Reminder: "${t.title}" is due ${t.due}${t.time?" at "+t.time:""}`)} target="_blank" rel="noopener" style={{...iconBtn,textDecoration:"none"}}>📲</a>
+                <button onClick={()=>openEditTask(t)} style={iconBtn}>✏️</button>
+                <button onClick={()=>setTasks(ts=>ts.filter(x=>x.id!==t.id))} style={iconBtn}>🗑️</button>
               </div>
             ))}
           </div>
@@ -454,20 +602,20 @@ function MainApp({user,onLogout}){
             <div style={card}>
               <div style={row}>
                 <span style={{fontSize:13,fontWeight:700,color:C.text}}>Meetings</span>
-                <button onClick={()=>setShowMeeting(true)} style={{fontSize:11,color:C.blue,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>+ Add</button>
+                <button onClick={openNewMeeting} style={{fontSize:11,color:C.blue,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>+ Add</button>
               </div>
               {meetings.length===0&&<p style={{fontSize:12,color:C.muted,textAlign:"center",padding:"8px 0"}}>No meetings scheduled.</p>}
               {meetings.map(m=>(
-                <div key={m.id} style={{display:"flex",gap:12,padding:"10px 12px",background:C.slateLight,borderRadius:12,borderLeft:`3px solid ${m.color}`,marginBottom:8}}>
+                <div key={m.id} style={{display:"flex",gap:6,padding:"10px 12px",background:C.slateLight,borderRadius:12,borderLeft:`3px solid ${m.color}`,marginBottom:8,alignItems:"center"}}>
                   <div style={{minWidth:40}}><div style={{fontSize:13,fontWeight:700,color:C.text}}>{m.time}</div></div>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:13,fontWeight:600,color:C.text}}>{m.title}</div>
+                  <div style={{flex:1,minWidth:0}} onClick={()=>openEditMeeting(m)}>
+                    <div style={{fontSize:13,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.title}{m.repeat&&m.repeat!=="None"?" 🔁":""}</div>
                     <div style={{fontSize:11,color:C.muted}}>{m.people} attendees</div>
                   </div>
-                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                    <button style={smBtn(m.color,"#fff")}>Join</button>
-                    <button onClick={()=>setMeetings(ms=>ms.filter(x=>x.id!==m.id))} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:13}}>✕</button>
-                  </div>
+                  <a href={waLink(`Meeting reminder: "${m.title}" at ${m.time}`)} target="_blank" rel="noopener" style={{...iconBtn,textDecoration:"none"}}>📲</a>
+                  <button style={smBtn(m.color,"#fff")}>Join</button>
+                  <button onClick={()=>openEditMeeting(m)} style={iconBtn}>✏️</button>
+                  <button onClick={()=>setMeetings(ms=>ms.filter(x=>x.id!==m.id))} style={iconBtn}>🗑️</button>
                 </div>
               ))}
             </div>
@@ -478,20 +626,22 @@ function MainApp({user,onLogout}){
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
               <span style={{fontSize:14,fontWeight:700,color:C.text}}>{team.length} Members</span>
-              <button onClick={()=>setShowMember(true)} style={{background:C.blue,color:"#fff",border:"none",borderRadius:10,padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>+ Add</button>
+              <button onClick={openNewMember} style={{background:C.blue,color:"#fff",border:"none",borderRadius:10,padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>+ Add</button>
             </div>
             {team.length===0&&<div style={{...card,textAlign:"center",padding:32}}><div style={{fontSize:32}}>👥</div><p style={{color:C.muted,fontSize:13,marginTop:8}}>Add your first team member!</p></div>}
             {team.map(m=>(
-              <div key={m.id} style={{background:C.white,borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:12,marginBottom:10}}>
+              <div key={m.id} style={{background:C.white,borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
                 <div style={{position:"relative"}}>
                   <Avatar init={m.init} size={40} bg={m.bg}/>
                   <div onClick={()=>setTeam(tm=>tm.map(x=>x.id===m.id?{...x,online:!x.online}:x))} style={{position:"absolute",bottom:0,right:0,width:10,height:10,borderRadius:"50%",background:m.online?"#10B981":"#CBD5E1",border:"2px solid #fff",cursor:"pointer"}}/>
                 </div>
-                <div style={{flex:1}}>
+                <div style={{flex:1,minWidth:0}} onClick={()=>openEditMember(m)}>
                   <div style={{fontSize:13,fontWeight:700,color:C.text}}>{m.name}</div>
                   <div style={{fontSize:11,color:C.muted}}>{m.role}</div>
                 </div>
                 <button onClick={()=>setMsgTarget(m)} style={smBtn(C.blueLight,C.blue)}>Message</button>
+                <button onClick={()=>openEditMember(m)} style={iconBtn}>✏️</button>
+                <button onClick={()=>setTeam(tm=>tm.filter(x=>x.id!==m.id))} style={iconBtn}>🗑️</button>
               </div>
             ))}
           </div>
@@ -541,6 +691,7 @@ function MainApp({user,onLogout}){
             <div style={{textAlign:"center"}}>
               <div style={{fontWeight:700,fontSize:16,color:C.text}}>{user.name}</div>
               <div style={{fontSize:12,color:C.muted,marginTop:2}}>{user.email}</div>
+              <div style={{fontSize:11,color:C.green,marginTop:4,fontWeight:600}}>☁️ Synced to cloud</div>
             </div>
             <div style={{width:"100%",background:C.slateLight,borderRadius:12,padding:14}}>
               <div style={{display:"flex",justifyContent:"space-around"}}>
@@ -552,56 +703,88 @@ function MainApp({user,onLogout}){
                 ))}
               </div>
             </div>
+            {notifStatus!=="granted"&&notifStatus!=="unsupported"&&(
+              <button onClick={enableNotifs} style={sBtn(C.amber)}>🔔 Enable Phone Notifications</button>
+            )}
+            {notifStatus==="granted"&&(
+              <div style={{fontSize:12,color:C.green,fontWeight:600}}>✓ Phone notifications enabled</div>
+            )}
             <button onClick={onLogout} style={sBtn(C.redBg,C.red)}>Sign Out</button>
           </div>
         </Modal>
       )}
 
       {showTask&&(
-        <Modal title="New Task" onClose={()=>setShowTask(false)}>
+        <Modal title={editTaskId?"Edit Task":"New Task"} onClose={()=>{setShowTask(false);setEditTaskId(null);}}>
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <FInput placeholder="Task title" value={nTitle} onChange={setNTitle}/>
             <FInput placeholder="Due date" value={nDue} onChange={setNDue} type="date"/>
             <FInput placeholder="Time" value={nTime} onChange={setNTime} type="time"/>
             <FSelect value={nPri} onChange={setNPri} options={["High","Medium","Low"]}/>
-            <button onClick={addTask} style={sBtn(C.blue)}>Add Task</button>
+            <div>
+              <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>🔁 Repeat</div>
+              <FSelect value={nRepeat} onChange={setNRepeat} options={REPEAT_OPTS}/>
+            </div>
+            <button onClick={saveTask} style={sBtn(C.blue)}>{editTaskId?"Save Changes":"Add Task"}</button>
           </div>
         </Modal>
       )}
       {showMeeting&&(
-        <Modal title="New Meeting" onClose={()=>setShowMeeting(false)}>
+        <Modal title={editMeetingId?"Edit Meeting":"New Meeting"} onClose={()=>{setShowMeeting(false);setEditMeetingId(null);}}>
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <FInput placeholder="Meeting title" value={mTitle} onChange={setMTitle}/>
             <FInput placeholder="Time" value={mTime} onChange={setMTime} type="time"/>
             <FInput placeholder="Attendees" value={mPeople} onChange={setMPeople} type="number"/>
-            <button onClick={addMeeting} style={sBtn(C.blue)}>Add Meeting</button>
+            <div>
+              <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>🔁 Repeat</div>
+              <FSelect value={mRepeat} onChange={setMRepeat} options={REPEAT_OPTS}/>
+            </div>
+            <button onClick={saveMeeting} style={sBtn(C.blue)}>{editMeetingId?"Save Changes":"Add Meeting"}</button>
           </div>
         </Modal>
       )}
       {showMember&&(
-        <Modal title="Add Team Member" onClose={()=>setShowMember(false)}>
+        <Modal title={editMemberId?"Edit Member":"Add Team Member"} onClose={()=>{setShowMember(false);setEditMemberId(null);}}>
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <FInput placeholder="Full name" value={mbName} onChange={setMbName}/>
             <FInput placeholder="Role / Title" value={mbRole} onChange={setMbRole}/>
-            <button onClick={addMember} style={sBtn(C.blue)}>Add Member</button>
+            <button onClick={saveMember} style={sBtn(C.blue)}>{editMemberId?"Save Changes":"Add Member"}</button>
           </div>
         </Modal>
       )}
-      {msgTarget&&<MsgModal member={msgTarget} userEmail={user.email} onClose={()=>setMsgTarget(null)}/>}
+      {msgTarget&&<MsgModal member={msgTarget} userUid={user.uid} onClose={()=>setMsgTarget(null)}/>}
     </div>
   );
 }
 
 function Root(){
-  const [screen,setScreen]=useState(()=>store.get("pd_onboarded")?"auth":"onboarding");
-  const [user,setUser]=useState(()=>store.get("pd_session"));
-  useEffect(()=>{if(user)setScreen("app");},[]);
-  function handleLogin(u){store.set("pd_session",u);store.set("pd_onboarded",true);setUser(u);setScreen("app");}
-  function handleLogout(){store.del("pd_session");setUser(null);setScreen("auth");}
+  const [screen,setScreen]=useState(()=>localStore.get("pd_onboarded")?"loading":"onboarding");
+  const [user,setUser]=useState(null);
+
+  useEffect(()=>{
+    const unsub=window._auth.onAuthStateChanged(fbUser=>{
+      if(fbUser){
+        setUser({uid:fbUser.uid,name:fbUser.displayName||fbUser.email.split("@")[0],email:fbUser.email});
+        setScreen("app");
+      } else {
+        setUser(null);
+        setScreen(localStore.get("pd_onboarded")?"auth":"onboarding");
+      }
+    });
+    return unsub;
+  },[]);
+
+  function handleLogout(){window._auth.signOut();}
+
   return(
     <div style={{width:"100%",maxWidth:480,height:"100vh",overflow:"hidden",display:"flex",flexDirection:"column",position:"relative",background:C.white}}>
-      {screen==="onboarding"&&<Onboarding onDone={()=>setScreen("auth")}/>}
-      {screen==="auth"&&<Auth onLogin={handleLogin}/>}
+      {screen==="loading"&&(
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",flexDirection:"column",gap:12}}>
+          <div style={{fontSize:36}}>⚡</div>
+        </div>
+      )}
+      {screen==="onboarding"&&<Onboarding onDone={()=>{localStore.set("pd_onboarded",true);setScreen("auth");}}/>}
+      {screen==="auth"&&<Auth/>}
       {screen==="app"&&user&&<MainApp user={user} onLogout={handleLogout}/>}
     </div>
   );
@@ -610,4 +793,4 @@ function Root(){
 ReactDOM.createRoot(document.getElementById("root")).render(<Root/>);
 </script>
 </body>
-  </html>
+</html>
