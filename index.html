@@ -48,8 +48,16 @@ const C={
   text:"#0F172A",muted:"#64748B",white:"#FFFFFF",purple:"#7C3AED",cyan:"#0891B2",
 };
 const PRI={High:{bg:C.redBg,col:C.red},Medium:{bg:C.amberBg,col:C.amber},Low:{bg:C.greenBg,col:C.green}};
-const DAYS=["M","T","W","T","F","S","S"];
-const CAL=["","","","","","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","23","24","25","26","27","28","29","30","31"];
+const MONTH_NAMES=["January","February","March","April","May","June","July","August","September","October","November","December"];
+function getCalendarDays(year,month){
+  const firstDay=new Date(year,month,1).getDay();
+  const offset=firstDay===0?6:firstDay-1;
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  const cells=[];
+  for(let i=0;i<offset;i++) cells.push("");
+  for(let d=1;d<=daysInMonth;d++) cells.push(d);
+  return cells;
+}
 const REPEAT_OPTS=["None","Daily","Weekly","Monthly"];
 
 const localStore={
@@ -99,13 +107,15 @@ function scheduleTaskReminder(task,onAlarm){
   const parts=task.time?task.time.split(":").map(Number):[9,0];
   due.setHours(parts[0],parts[1],0,0);
   const now=new Date();
+  const delayExact=due.getTime()-now.getTime();
+  if(delayExact>0) scheduleAlarm("🔴 Task Due Now!",`"${task.title}" is due now at ${task.time||"09:00"}`,delayExact,onAlarm);
   const remind=new Date(due.getTime()-15*60*1000);
-  const delay=remind-now;
-  if(delay>0) scheduleAlarm("📋 Task Starting Soon!",`"${task.title}" starts in 15 mins at ${task.time||"09:00"}`,delay,onAlarm);
+  const delay15=remind.getTime()-now.getTime();
+  if(delay15>0) scheduleAlarm("📋 Task Starting Soon!",`"${task.title}" starts in 15 mins at ${task.time||"09:00"}`,delay15,onAlarm);
   const dayBefore=new Date(due);
   dayBefore.setDate(due.getDate()-1);
   dayBefore.setHours(9,0,0,0);
-  const d1=dayBefore-now;
+  const d1=dayBefore.getTime()-now.getTime();
   if(d1>0) scheduleAlarm("📋 Task Due Tomorrow!",`"${task.title}" is due tomorrow at ${task.time||"09:00"}`,d1,onAlarm);
 }
 function scheduleMeetingReminder(meeting,onAlarm){
@@ -114,9 +124,11 @@ function scheduleMeetingReminder(meeting,onAlarm){
   const t=new Date();
   const parts=meeting.time.split(":").map(Number);
   t.setHours(parts[0],parts[1],0,0);
+  const delayExact=t.getTime()-now.getTime();
+  if(delayExact>0) scheduleAlarm("🔴 Meeting Starting Now!",`"${meeting.title}" is starting now`,delayExact,onAlarm);
   const remind=new Date(t.getTime()-15*60*1000);
-  const delay=remind-now;
-  if(delay>0) scheduleAlarm("📅 Meeting in 15 mins!",`"${meeting.title}" starts at ${meeting.time}`,delay,onAlarm);
+  const delay15=remind.getTime()-now.getTime();
+  if(delay15>0) scheduleAlarm("📅 Meeting in 15 mins!",`"${meeting.title}" starts at ${meeting.time}`,delay15,onAlarm);
 }
 function nextOccurrence(dateStr,repeat){
   const d=new Date(dateStr);
@@ -325,6 +337,9 @@ function MainApp({user,onLogout}){
 
   const [search,setSearch]=useState("");
   const [filterPri,setFilterPri]=useState("All");
+  const today=new Date();
+  const [calYear,setCalYear]=useState(today.getFullYear());
+  const [calMonth,setCalMonth]=useState(today.getMonth());
 
   const [alarm,setAlarm]=useState(null);
   const [notifStatus,setNotifStatus]=useState(("Notification" in window)?Notification.permission:"unsupported");
@@ -590,13 +605,20 @@ function MainApp({user,onLogout}){
           <div>
             <div style={card}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-                <button style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.muted}}>‹</button>
-                <span style={{fontWeight:700,fontSize:14,color:C.text}}>March 2026</span>
-                <button style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.muted}}>›</button>
+                <button onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);}} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.muted,padding:"4px 10px"}}>‹</button>
+                <span style={{fontWeight:700,fontSize:14,color:C.text}}>{MONTH_NAMES[calMonth]} {calYear}</span>
+                <button onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.muted,padding:"4px 10px"}}>›</button>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,textAlign:"center"}}>
-                {DAYS.map((d,i)=><div key={i} style={{fontSize:10,fontWeight:700,color:C.muted,padding:"2px 0"}}>{d}</div>)}
-                {CAL.map((d,i)=><div key={i} style={{fontSize:12,padding:"5px 2px",borderRadius:8,background:d==="9"?C.blue:"transparent",color:d==="9"?"#fff":d?C.text:"transparent",fontWeight:d==="9"?700:400,cursor:d?"pointer":"default"}}>{d}</div>)}
+                {["M","T","W","T","F","S","S"].map((d,i)=><div key={i} style={{fontSize:10,fontWeight:700,color:C.muted,padding:"2px 0"}}>{d}</div>)}
+                {getCalendarDays(calYear,calMonth).map((d,i)=>{
+                  const isToday=d && calYear===today.getFullYear() && calMonth===today.getMonth() && d===today.getDate();
+                  return (
+                    <div key={i} style={{fontSize:12,padding:"5px 2px",borderRadius:8,background:isToday?C.blue:"transparent",color:isToday?"#fff":d?C.text:"transparent",fontWeight:isToday?700:400,cursor:d?"pointer":"default"}}>
+                      {d}
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div style={card}>
@@ -793,4 +815,4 @@ function Root(){
 ReactDOM.createRoot(document.getElementById("root")).render(<Root/>);
 </script>
 </body>
-</html>
+  </html>
