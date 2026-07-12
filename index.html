@@ -48,7 +48,15 @@ const C={
   text:"#0F172A",muted:"#64748B",white:"#FFFFFF",purple:"#7C3AED",cyan:"#0891B2",
 };
 const PRI={High:{bg:C.redBg,col:C.red},Medium:{bg:C.amberBg,col:C.amber},Low:{bg:C.greenBg,col:C.green}};
+const REPEAT_OPTS=["None","Daily","Weekly","Monthly"];
 const MONTH_NAMES=["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+const localStore={
+  get:(k)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch(e){return null;}},
+  set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}},
+  del:(k)=>{try{localStorage.removeItem(k);}catch(e){}},
+};
+
 function getCalendarDays(year,month){
   const firstDay=new Date(year,month,1).getDay();
   const offset=firstDay===0?6:firstDay-1;
@@ -58,13 +66,6 @@ function getCalendarDays(year,month){
   for(let d=1;d<=daysInMonth;d++) cells.push(d);
   return cells;
 }
-const REPEAT_OPTS=["None","Daily","Weekly","Monthly"];
-
-const localStore={
-  get:(k)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch{return null;}},
-  set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}},
-  del:(k)=>{try{localStorage.removeItem(k);}catch{}},
-};
 
 function playBeep(){
   try{
@@ -139,6 +140,78 @@ function nextOccurrence(dateStr,repeat){
   return d.toISOString().slice(0,10);
 }
 function waLink(text){return "https://wa.me/?text="+encodeURIComponent(text);}
+function pad2(n){return String(n).padStart(2,"0");}
+function toCalStamp(dateStr,timeStr){
+  const parts=dateStr.split("-").map(Number);
+  const tparts=(timeStr||"09:00").split(":").map(Number);
+  const dt=new Date(parts[0],parts[1]-1,parts[2],tparts[0],tparts[1]);
+  return dt.getFullYear()+pad2(dt.getMonth()+1)+pad2(dt.getDate())+"T"+pad2(dt.getHours())+pad2(dt.getMinutes())+"00";
+}
+function toCalStampPlusMins(dateStr,timeStr,mins){
+  const parts=dateStr.split("-").map(Number);
+  const tparts=(timeStr||"09:00").split(":").map(Number);
+  const dt=new Date(parts[0],parts[1]-1,parts[2],tparts[0],tparts[1]);
+  dt.setMinutes(dt.getMinutes()+mins);
+  return dt.getFullYear()+pad2(dt.getMonth()+1)+pad2(dt.getDate())+"T"+pad2(dt.getHours())+pad2(dt.getMinutes())+"00";
+}
+function gcalLink(title,details,dateStr,timeStr,durationMins){
+  if(!dateStr||dateStr==="TBD")return "#";
+  const start=toCalStamp(dateStr,timeStr);
+  const end=toCalStampPlusMins(dateStr,timeStr,durationMins);
+  const params="action=TEMPLATE&text="+encodeURIComponent(title)+"&dates="+start+"/"+end+"&details="+encodeURIComponent(details||"");
+  return "https://calendar.google.com/calendar/render?"+params;
+}
+function extractiveSummary(text,maxSentences){
+  maxSentences=maxSentences||3;
+  const sentences=(text||"").split(/(?<=[.!?])\s+/).filter(function(s){return s.trim().length>3;});
+  if(sentences.length<=maxSentences) return text;
+  const words=(text.toLowerCase().match(/\b\w+\b/g))||[];
+  const freq={};
+  words.forEach(function(w){if(w.length>3) freq[w]=(freq[w]||0)+1;});
+  const scored=sentences.map(function(s){
+    const sw=(s.toLowerCase().match(/\b\w+\b/g))||[];
+    const score=sw.reduce(function(sum,w){return sum+(freq[w]||0);},0)/(sw.length||1);
+    return {s:s,score:score};
+  });
+  const sorted=scored.slice().sort(function(a,b){return b.score-a.score;});
+  const top=sorted.slice(0,maxSentences).map(function(x){return x.s;});
+  return sentences.filter(function(s){return top.indexOf(s)!==-1;}).join(" ");
+}
+async function aiSummarize(text){
+  try{
+    const res=await fetch("/.netlify/functions/summarize",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text:text})
+    });
+    const data=await res.json();
+    if(!res.ok||!data.summary){
+      return {ok:false,summary:extractiveSummary(text,3),fallback:true};
+    }
+    return {ok:true,summary:data.summary,fallback:false};
+  }catch(e){
+    return {ok:false,summary:extractiveSummary(text,3),fallback:true};
+  }
+}
+function startVoiceInput(onResult,onEnd){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){alert("Voice input isn't supported on this browser. Try Chrome.");return null;}
+  const rec=new SR();
+  rec.continuous=true;
+  rec.interimResults=false;
+  rec.lang="en-US";
+  rec.onresult=function(e){
+    let text="";
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      text+=e.results[i][0].transcript+" ";
+    }
+    onResult(text);
+  };
+  rec.onend=function(){if(onEnd) onEnd();};
+  rec.onerror=function(){if(onEnd) onEnd();};
+  rec.start();
+  return rec;
+}
 
 function Avatar({init,size=36,bg=C.navy}){
   return <div style={{width:size,height:size,borderRadius:"50%",background:bg,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*0.36,fontWeight:700,flexShrink:0}}>{init}</div>;
@@ -160,12 +233,12 @@ function Modal({title,onClose,children}){
   );
 }
 function FInput({placeholder,value,onChange,type="text"}){
-  return <input type={type} placeholder={placeholder} value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"10px 12px",borderRadius:10,border:`1px solid ${C.border}`,fontSize:13,color:C.text,background:C.slateLight,boxSizing:"border-box",outline:"none",marginBottom:2}}/>;
+  return <input type={type} placeholder={placeholder} value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:13,color:C.text,background:C.slateLight,boxSizing:"border-box",outline:"none",marginBottom:2}}/>;
 }
 function FSelect({value,onChange,options}){
-  return <select value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"10px 12px",borderRadius:10,border:`1px solid ${C.border}`,fontSize:13,color:C.text,background:C.slateLight,boxSizing:"border-box",outline:"none"}}>{options.map(o=><option key={o} value={o}>{o}</option>)}</select>;
+  return <select value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:13,color:C.text,background:C.slateLight,boxSizing:"border-box",outline:"none"}}>{options.map(o=><option key={o} value={o}>{o}</option>)}</select>;
 }
-const sBtn=(bg,col="#fff")=>({background:bg,color:col,border:"none",borderRadius:12,padding:"13px",cursor:"pointer",fontWeight:700,fontSize:13,width:"100%"});
+const sBtn=(bg,col)=>({background:bg,color:col||"#fff",border:"none",borderRadius:12,padding:"13px",cursor:"pointer",fontWeight:700,fontSize:13,width:"100%"});
 const smBtn=(bg,col)=>({background:bg,color:col,border:"none",borderRadius:8,padding:"5px 12px",fontSize:11,fontWeight:700,cursor:"pointer"});
 const iconBtn={background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:14,padding:"4px 6px"};
 
@@ -213,11 +286,11 @@ function Auth(){
     setBusy(true);
     if(mode==="signup"){
       window._auth.createUserWithEmailAndPassword(email,pass)
-        .then(cred=>cred.user.updateProfile({displayName:name.trim()}))
-        .catch(e=>{setErr(e.message);setBusy(false);});
+        .then(function(cred){return cred.user.updateProfile({displayName:name.trim()});})
+        .catch(function(e){setErr(e.message);setBusy(false);});
     } else {
       window._auth.signInWithEmailAndPassword(email,pass)
-        .catch(e=>{setErr(e.message);setBusy(false);});
+        .catch(function(e){setErr(e.message);setBusy(false);});
     }
   }
 
@@ -240,7 +313,7 @@ function Auth(){
         <FInput placeholder="Email address" value={email} onChange={setEmail} type="email"/>
         <FInput placeholder="Password (min 6 chars)" value={pass} onChange={setPass} type="password"/>
         {err&&<div style={{background:C.redBg,color:C.red,padding:"8px 12px",borderRadius:8,fontSize:12,fontWeight:600}}>{err}</div>}
-        <button onClick={handleSubmit} disabled={busy} style={{...sBtn(C.blue),marginTop:4,opacity:busy?0.6:1}}>{busy?"Please wait...":(mode==="login"?"Sign In":"Create Account")}</button>
+        <button onClick={handleSubmit} disabled={busy} style={Object.assign({},sBtn(C.blue),{marginTop:4,opacity:busy?0.6:1})}>{busy?"Please wait...":(mode==="login"?"Sign In":"Create Account")}</button>
         <p style={{color:C.muted,fontSize:11,textAlign:"center",margin:0}}>☁️ Your data syncs securely across all your devices.</p>
       </div>
     </div>
@@ -250,11 +323,11 @@ function Auth(){
 function MsgModal({member,userUid,onClose}){
   const key="pd_msg_"+userUid+"_"+member.id;
   const [input,setInput]=useState("");
-  const [convo,setConvo]=useState(()=>localStore.get(key)||[]);
+  const [convo,setConvo]=useState(function(){return localStore.get(key)||[];});
   function send(){
     if(!input.trim())return;
     const msg={text:input,time:new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})};
-    const updated=[...convo,msg];
+    const updated=convo.concat([msg]);
     setConvo(updated);localStore.set(key,updated);setInput("");
   }
   return(
@@ -269,7 +342,7 @@ function MsgModal({member,userUid,onClose}){
         ))}
       </div>
       <div style={{display:"flex",gap:8}}>
-        <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")send();}} placeholder="Type a message..." style={{flex:1,padding:"10px 12px",borderRadius:10,border:`1px solid ${C.border}`,fontSize:13,outline:"none"}}/>
+        <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")send();}} placeholder="Type a message..." style={{flex:1,padding:"10px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:13,outline:"none"}}/>
         <button onClick={send} style={{background:C.blue,color:"#fff",border:"none",borderRadius:10,padding:"10px 16px",cursor:"pointer",fontWeight:700}}>Send</button>
       </div>
     </Modal>
@@ -279,8 +352,8 @@ function MsgModal({member,userUid,onClose}){
 function MainApp({user,onLogout}){
   const defaults={
     tasks:[
-      {id:1,title:"Review onboarding docs",due:"2026-03-09",time:"09:00",priority:"High",done:false,repeat:"None"},
-      {id:2,title:"Set up your team",due:"2026-03-10",time:"09:00",priority:"Medium",done:false,repeat:"None"},
+      {id:1,title:"Review onboarding docs",due:"2026-07-15",time:"09:00",priority:"High",done:false,repeat:"None"},
+      {id:2,title:"Set up your team",due:"2026-07-16",time:"09:00",priority:"Medium",done:false,repeat:"None"},
     ],
     meetings:[{id:1,time:"10:00",title:"Team Kickoff",people:4,color:C.blue,repeat:"None"}],
     team:[],
@@ -292,12 +365,11 @@ function MainApp({user,onLogout}){
   const [meetings,setMeetingsRaw]=useState(defaults.meetings);
   const [team,setTeamRaw]=useState(defaults.team);
   const [notifs,setNotifsRaw]=useState(defaults.notifs);
+  const [loadErr,setLoadErr]=useState("");
 
-  const docRef=window._db.collection("prodesk_users").doc(user.uid);
-
-  // Real-time Firestore sync
-  useEffect(()=>{
-    const unsub=docRef.onSnapshot(snap=>{
+  useEffect(function(){
+    const docRef=window._db.collection("prodesk_users").doc(user.uid);
+    const unsub=docRef.onSnapshot(function(snap){
       if(snap.exists){
         const d=snap.data();
         setTasksRaw(d.tasks||defaults.tasks);
@@ -308,17 +380,21 @@ function MainApp({user,onLogout}){
         docRef.set(defaults);
       }
       setLoaded(true);
-    },err=>{console.log("Firestore error",err);setLoaded(true);});
+    },function(err){
+      console.log("Firestore error",err);
+      setLoadErr(err.message||"Sync error");
+      setLoaded(true);
+    });
     return unsub;
   },[]);
 
   function saveAll(next){
-    docRef.set(next,{merge:true}).catch(e=>console.log("save err",e));
+    window._db.collection("prodesk_users").doc(user.uid).set(next,{merge:true}).catch(function(e){console.log("save err",e);});
   }
-  function setTasks(fn){setTasksRaw(prev=>{const next=fn(prev);saveAll({tasks:next});return next;});}
-  function setMeetings(fn){setMeetingsRaw(prev=>{const next=fn(prev);saveAll({meetings:next});return next;});}
-  function setTeam(fn){setTeamRaw(prev=>{const next=fn(prev);saveAll({team:next});return next;});}
-  function setNotifs(fn){setNotifsRaw(prev=>{const next=fn(prev);saveAll({notifs:next});return next;});}
+  function setTasks(fn){setTasksRaw(function(prev){const next=fn(prev);saveAll({tasks:next});return next;});}
+  function setMeetings(fn){setMeetingsRaw(function(prev){const next=fn(prev);saveAll({meetings:next});return next;});}
+  function setTeam(fn){setTeamRaw(function(prev){const next=fn(prev);saveAll({team:next});return next;});}
+  function setNotifs(fn){setNotifsRaw(function(prev){const next=fn(prev);saveAll({notifs:next});return next;});}
 
   const [showTask,setShowTask]=useState(false);
   const [showMeeting,setShowMeeting]=useState(false);
@@ -331,9 +407,32 @@ function MainApp({user,onLogout}){
   const [editMeetingId,setEditMeetingId]=useState(null);
   const [editMemberId,setEditMemberId]=useState(null);
 
-  const [nTitle,setNTitle]=useState("");const [nDue,setNDue]=useState("");const [nTime,setNTime]=useState("09:00");const [nPri,setNPri]=useState("Medium");const [nRepeat,setNRepeat]=useState("None");
-  const [mTitle,setMTitle]=useState("");const [mTime,setMTime]=useState("09:00");const [mPeople,setMPeople]=useState("2");const [mRepeat,setMRepeat]=useState("None");
+  const [nTitle,setNTitle]=useState("");const [nDue,setNDue]=useState("");const [nTime,setNTime]=useState("09:00");const [nPri,setNPri]=useState("Medium");const [nRepeat,setNRepeat]=useState("None");const [nNotes,setNNotes]=useState("");const [nSummary,setNSummary]=useState("");
+  const [mTitle,setMTitle]=useState("");const [mTime,setMTime]=useState("09:00");const [mPeople,setMPeople]=useState("2");const [mRepeat,setMRepeat]=useState("None");const [mNotes,setMNotes]=useState("");const [mSummary,setMSummary]=useState("");
   const [mbName,setMbName]=useState("");const [mbRole,setMbRole]=useState("");
+  const [recording,setRecording]=useState(null);
+  const [recActive,setRecActive]=useState(false);
+  const [summarizing,setSummarizing]=useState(false);
+
+  async function doSummarize(text,setSummaryFn){
+    setSummarizing(true);
+    const result=await aiSummarize(text);
+    setSummaryFn(result.fallback?("(offline summary) "+result.summary):result.summary);
+    setSummarizing(false);
+  }
+
+  function toggleVoice(setNotesFn,currentNotes){
+    if(recActive){
+      if(recording) recording.stop();
+      setRecActive(false);
+      return;
+    }
+    const rec=startVoiceInput(function(text){
+      setNotesFn(function(prev){return (prev?prev+" ":"")+text;});
+    },function(){setRecActive(false);});
+    setRecording(rec);
+    setRecActive(true);
+  }
 
   const [search,setSearch]=useState("");
   const [filterPri,setFilterPri]=useState("All");
@@ -344,71 +443,75 @@ function MainApp({user,onLogout}){
   const [alarm,setAlarm]=useState(null);
   const [notifStatus,setNotifStatus]=useState(("Notification" in window)?Notification.permission:"unsupported");
 
-  function onAlarm(title,body){setAlarm({title,body});}
+  function onAlarm(title,body){setAlarm({title:title,body:body});}
   function snoozeAlarm(){
     const a=alarm;
     setAlarm(null);
-    setTimeout(()=>{playBeep();tryRealNotification(a.title,a.body);setAlarm(a);},15*60*1000);
+    setTimeout(function(){playBeep();tryRealNotification(a.title,a.body);setAlarm(a);},15*60*1000);
   }
   function dismissAlarm(){setAlarm(null);}
   function enableNotifs(){
-    requestNotifPermission(granted=>{
+    requestNotifPermission(function(granted){
       setNotifStatus(granted?"granted":"denied");
       if(granted) tryRealNotification("⚡ ProDesk","Notifications enabled!");
     });
   }
 
-  useEffect(()=>{
+  useEffect(function(){
     clearAlarms();
-    tasks.forEach(t=>scheduleTaskReminder(t,onAlarm));
-    meetings.forEach(m=>scheduleMeetingReminder(m,onAlarm));
-    return ()=>clearAlarms();
+    tasks.forEach(function(t){scheduleTaskReminder(t,onAlarm);});
+    meetings.forEach(function(m){scheduleMeetingReminder(m,onAlarm);});
+    return function(){clearAlarms();};
   },[tasks,meetings]);
 
-  const unread=notifs.filter(n=>!n.read).length;
-  const doneTasks=tasks.filter(t=>t.done).length;
-  const openTasks=tasks.filter(t=>!t.done).length;
+  const unread=notifs.filter(function(n){return !n.read;}).length;
+  const doneTasks=tasks.filter(function(t){return t.done;}).length;
+  const openTasks=tasks.filter(function(t){return !t.done;}).length;
   const completionRate=tasks.length?Math.round((doneTasks/tasks.length)*100):0;
-  const priCounts={High:tasks.filter(t=>t.priority==="High"&&!t.done).length,Medium:tasks.filter(t=>t.priority==="Medium"&&!t.done).length,Low:tasks.filter(t=>t.priority==="Low"&&!t.done).length};
-  const initials=user.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
+  const priCounts={
+    High:tasks.filter(function(t){return t.priority==="High"&&!t.done;}).length,
+    Medium:tasks.filter(function(t){return t.priority==="Medium"&&!t.done;}).length,
+    Low:tasks.filter(function(t){return t.priority==="Low"&&!t.done;}).length
+  };
+  const initials=user.name.split(" ").map(function(w){return w[0];}).join("").slice(0,2).toUpperCase();
 
-  function openNewTask(){setEditTaskId(null);setNTitle("");setNDue("");setNTime("09:00");setNPri("Medium");setNRepeat("None");setShowTask(true);}
-  function openEditTask(t){setEditTaskId(t.id);setNTitle(t.title);setNDue(t.due==="TBD"?"":t.due);setNTime(t.time||"09:00");setNPri(t.priority);setNRepeat(t.repeat||"None");setShowTask(true);}
+  function openNewTask(){setEditTaskId(null);setNTitle("");setNDue("");setNTime("09:00");setNPri("Medium");setNRepeat("None");setNNotes("");setNSummary("");setShowTask(true);}
+  function openEditTask(t){setEditTaskId(t.id);setNTitle(t.title);setNDue(t.due==="TBD"?"":t.due);setNTime(t.time||"09:00");setNPri(t.priority);setNRepeat(t.repeat||"None");setNNotes(t.notes||"");setNSummary("");setShowTask(true);}
   function saveTask(){
     if(!nTitle.trim())return;
     if(editTaskId){
-      setTasks(ts=>ts.map(t=>t.id===editTaskId?{...t,title:nTitle,due:nDue||"TBD",time:nTime,priority:nPri,repeat:nRepeat}:t));
-      setNotifs(ns=>[{id:Date.now(),text:`Task "${nTitle}" updated.`,read:false},...ns.slice(0,19)]);
+      setTasks(function(ts){return ts.map(function(t){return t.id===editTaskId?Object.assign({},t,{title:nTitle,due:nDue||"TBD",time:nTime,priority:nPri,repeat:nRepeat,notes:nNotes}):t;});});
+      setNotifs(function(ns){return [{id:Date.now(),text:'Task "'+nTitle+'" updated.',read:false}].concat(ns.slice(0,19));});
     } else {
-      const t={id:Date.now(),title:nTitle,due:nDue||"TBD",time:nTime,priority:nPri,done:false,repeat:nRepeat};
-      setTasks(ts=>[...ts,t]);
-      setNotifs(ns=>[{id:Date.now(),text:`Task "${nTitle}" added.`,read:false},...ns.slice(0,19)]);
+      const t={id:Date.now(),title:nTitle,due:nDue||"TBD",time:nTime,priority:nPri,done:false,repeat:nRepeat,notes:nNotes};
+      setTasks(function(ts){return ts.concat([t]);});
+      setNotifs(function(ns){return [{id:Date.now(),text:'Task "'+nTitle+'" added.',read:false}].concat(ns.slice(0,19));});
     }
     setShowTask(false);setEditTaskId(null);
   }
   function toggleTaskDone(t){
-    setTasks(ts=>ts.map(x=>x.id===t.id?{...x,done:!x.done}:x));
+    setTasks(function(ts){return ts.map(function(x){return x.id===t.id?Object.assign({},x,{done:!x.done}):x;});});
     if(!t.done && t.repeat && t.repeat!=="None" && t.due && t.due!=="TBD"){
       const next=nextOccurrence(t.due,t.repeat);
       if(next){
-        setTasks(ts=>[...ts,{id:Date.now(),title:t.title,due:next,time:t.time,priority:t.priority,done:false,repeat:t.repeat}]);
-        setNotifs(ns=>[{id:Date.now(),text:`Next "${t.title}" scheduled for ${next}.`,read:false},...ns.slice(0,19)]);
+        setTasks(function(ts){return ts.concat([{id:Date.now(),title:t.title,due:next,time:t.time,priority:t.priority,done:false,repeat:t.repeat}]);});
+        setNotifs(function(ns){return [{id:Date.now(),text:'Next "'+t.title+'" scheduled for '+next+'.',read:false}].concat(ns.slice(0,19));});
       }
     }
   }
 
-  function openNewMeeting(){setEditMeetingId(null);setMTitle("");setMTime("09:00");setMPeople("2");setMRepeat("None");setShowMeeting(true);}
-  function openEditMeeting(m){setEditMeetingId(m.id);setMTitle(m.title);setMTime(m.time);setMPeople(String(m.people));setMRepeat(m.repeat||"None");setShowMeeting(true);}
+  function openNewMeeting(){setEditMeetingId(null);setMTitle("");setMTime("09:00");setMPeople("2");setMRepeat("None");setMNotes("");setMSummary("");setShowMeeting(true);}
+  function openEditMeeting(m){setEditMeetingId(m.id);setMTitle(m.title);setMTime(m.time);setMPeople(String(m.people));setMRepeat(m.repeat||"None");setMNotes(m.notes||"");setMSummary("");setShowMeeting(true);}
   function saveMeeting(){
     if(!mTitle.trim())return;
     if(editMeetingId){
-      setMeetings(ms=>ms.map(m=>m.id===editMeetingId?{...m,title:mTitle,time:mTime,people:parseInt(mPeople)||2,repeat:mRepeat}:m));
-      setNotifs(ns=>[{id:Date.now(),text:`Meeting "${mTitle}" updated.`,read:false},...ns.slice(0,19)]);
+      setMeetings(function(ms){return ms.map(function(m){return m.id===editMeetingId?Object.assign({},m,{title:mTitle,time:mTime,people:parseInt(mPeople)||2,repeat:mRepeat,notes:mNotes}):m;});});
+      setNotifs(function(ns){return [{id:Date.now(),text:'Meeting "'+mTitle+'" updated.',read:false}].concat(ns.slice(0,19));});
     } else {
       const cols=[C.blue,C.green,C.amber,C.navy,C.purple,C.cyan];
-      const m={id:Date.now(),time:mTime,title:mTitle,people:parseInt(mPeople)||2,color:cols[meetings.length%cols.length],repeat:mRepeat};
-      setMeetings(ms=>[...ms,m]);
-      setNotifs(ns=>[{id:Date.now(),text:`Meeting "${mTitle}" at ${mTime} scheduled.`,read:false},...ns.slice(0,19)]);
+      const m={id:Date.now(),time:mTime,title:mTitle,people:parseInt(mPeople)||2,color:cols[meetings.length%cols.length],repeat:mRepeat,notes:mNotes};
+      setMeetings(function(ms){return ms.concat([m]);});
+      setNotifs(function(ns){return [{id:Date.now(),text:'Meeting "'+mTitle+'" at '+mTime+' scheduled.',read:false}].concat(ns.slice(0,19));});
     }
     setShowMeeting(false);setEditMeetingId(null);
   }
@@ -418,23 +521,23 @@ function MainApp({user,onLogout}){
   function saveMember(){
     if(!mbName.trim())return;
     if(editMemberId){
-      const init=mbName.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
-      setTeam(tm=>tm.map(m=>m.id===editMemberId?{...m,name:mbName,role:mbRole||"Team Member",init}:m));
-      setNotifs(ns=>[{id:Date.now(),text:`${mbName}'s profile updated.`,read:false},...ns.slice(0,19)]);
+      const init=mbName.split(" ").map(function(w){return w[0];}).join("").slice(0,2).toUpperCase();
+      setTeam(function(tm){return tm.map(function(m){return m.id===editMemberId?Object.assign({},m,{name:mbName,role:mbRole||"Team Member",init:init}):m;});});
+      setNotifs(function(ns){return [{id:Date.now(),text:mbName+"'s profile updated.",read:false}].concat(ns.slice(0,19));});
     } else {
       const bgs=[C.purple,C.cyan,C.amber,C.green,C.red,C.blue];
-      const init=mbName.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
-      setTeam(tm=>[...tm,{id:Date.now(),name:mbName,role:mbRole||"Team Member",init,online:false,bg:bgs[tm.length%bgs.length]}]);
-      setNotifs(ns=>[{id:Date.now(),text:`${mbName} added to your team.`,read:false},...ns.slice(0,19)]);
+      const init=mbName.split(" ").map(function(w){return w[0];}).join("").slice(0,2).toUpperCase();
+      setTeam(function(tm){return tm.concat([{id:Date.now(),name:mbName,role:mbRole||"Team Member",init:init,online:false,bg:bgs[tm.length%bgs.length]}]);});
+      setNotifs(function(ns){return [{id:Date.now(),text:mbName+" added to your team.",read:false}].concat(ns.slice(0,19));});
     }
     setShowMember(false);setEditMemberId(null);
   }
 
-  const card={background:C.white,borderRadius:16,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:`1px solid ${C.border}`,marginBottom:12};
+  const card={background:C.white,borderRadius:16,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:"1px solid "+C.border,marginBottom:12};
   const row={display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12};
 
-  const filteredTasks=tasks.filter(t=>{
-    const matchSearch=t.title.toLowerCase().includes(search.toLowerCase());
+  const filteredTasks=tasks.filter(function(t){
+    const matchSearch=t.title.toLowerCase().indexOf(search.toLowerCase())!==-1;
     const matchPri=filterPri==="All"||t.priority===filterPri;
     return matchSearch&&matchPri;
   });
@@ -444,6 +547,17 @@ function MainApp({user,onLogout}){
       <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",flexDirection:"column",gap:12,background:C.white}}>
         <div style={{fontSize:36}}>☁️</div>
         <p style={{color:C.muted,fontSize:13}}>Syncing your workspace...</p>
+      </div>
+    );
+  }
+
+  if(loadErr){
+    return(
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",flexDirection:"column",gap:12,background:C.white,padding:24,textAlign:"center"}}>
+        <div style={{fontSize:36}}>⚠️</div>
+        <p style={{color:C.red,fontSize:13,fontWeight:600}}>Sync error: {loadErr}</p>
+        <p style={{color:C.muted,fontSize:12}}>Check your Firestore rules allow read/write, then reload.</p>
+        <button onClick={onLogout} style={sBtn(C.blue)}>Sign Out</button>
       </div>
     );
   }
@@ -486,9 +600,9 @@ function MainApp({user,onLogout}){
         </div>
       </div>
 
-      <div style={{background:C.white,borderBottom:`1px solid ${C.border}`,display:"flex"}}>
+      <div style={{background:C.white,borderBottom:"1px solid "+C.border,display:"flex"}}>
         {["Dashboard","Tasks","Calendar","Team"].map((t,i)=>(
-          <button key={i} onClick={()=>setTab(i)} style={{flex:1,padding:"12px 4px",fontSize:11,fontWeight:tab===i?700:500,color:tab===i?C.blue:C.muted,background:"none",border:"none",cursor:"pointer",borderBottom:tab===i?`2.5px solid ${C.blue}`:"2.5px solid transparent"}}>
+          <button key={i} onClick={()=>setTab(i)} style={{flex:1,padding:"12px 4px",fontSize:11,fontWeight:tab===i?700:500,color:tab===i?C.blue:C.muted,background:"none",border:"none",cursor:"pointer",borderBottom:tab===i?"2.5px solid "+C.blue:"2.5px solid transparent"}}>
             {t}
           </button>
         ))}
@@ -503,7 +617,7 @@ function MainApp({user,onLogout}){
                 <span style={{fontSize:13,fontWeight:800,color:C.blue}}>{completionRate}%</span>
               </div>
               <div style={{background:C.slateLight,borderRadius:8,height:10,overflow:"hidden",marginBottom:14}}>
-                <div style={{background:C.blue,height:"100%",width:completionRate+"%",borderRadius:8,transition:"width 0.3s"}}/>
+                <div style={{background:C.blue,height:"100%",width:completionRate+"%",borderRadius:8}}/>
               </div>
               <div style={{display:"flex",gap:8}}>
                 {["High","Medium","Low"].map(p=>(
@@ -520,10 +634,10 @@ function MainApp({user,onLogout}){
                 <span style={{fontSize:13,fontWeight:700,color:C.text}}>Priority Tasks</span>
                 <button onClick={()=>setTab(1)} style={{fontSize:11,color:C.blue,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>View All</button>
               </div>
-              {tasks.filter(t=>t.priority==="High"&&!t.done).length===0&&<p style={{fontSize:12,color:C.muted,textAlign:"center",padding:"8px 0"}}>No high priority tasks!</p>}
-              {tasks.filter(t=>t.priority==="High"&&!t.done).map(t=>(
-                <div key={t.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
-                  <div onClick={()=>toggleTaskDone(t)} style={{width:18,height:18,borderRadius:5,border:`2px solid ${t.done?C.blue:C.border}`,background:t.done?C.blue:"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
+              {tasks.filter(function(t){return t.priority==="High"&&!t.done;}).length===0&&<p style={{fontSize:12,color:C.muted,textAlign:"center",padding:"8px 0"}}>No high priority tasks!</p>}
+              {tasks.filter(function(t){return t.priority==="High"&&!t.done;}).map(t=>(
+                <div key={t.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:"1px solid "+C.border}}>
+                  <div onClick={()=>toggleTaskDone(t)} style={{width:18,height:18,borderRadius:5,border:"2px solid "+(t.done?C.blue:C.border),background:t.done?C.blue:"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
                     {t.done&&<span style={{color:"#fff",fontSize:10}}>✓</span>}
                   </div>
                   <div style={{flex:1}} onClick={()=>openEditTask(t)}>
@@ -560,7 +674,7 @@ function MainApp({user,onLogout}){
                   {icon:"👥",label:"Add Member",bg:"#F5F3FF",col:C.purple,action:openNewMember},
                   {icon:"👤",label:"Profile",bg:C.amberBg,col:C.amber,action:()=>setShowProfile(true)},
                 ].map((a,i)=>(
-                  <button key={i} onClick={a.action} style={{background:a.bg,border:`1px solid ${a.col}22`,borderRadius:12,padding:"12px",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
+                  <button key={i} onClick={a.action} style={{background:a.bg,border:"1px solid "+a.col+"22",borderRadius:12,padding:"12px",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
                     <span style={{fontSize:18}}>{a.icon}</span>
                     <span style={{fontSize:12,fontWeight:700,color:a.col}}>{a.label}</span>
                   </button>
@@ -577,25 +691,26 @@ function MainApp({user,onLogout}){
               <button onClick={openNewTask} style={{background:C.blue,color:"#fff",border:"none",borderRadius:10,padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>+ New</button>
             </div>
             <div style={{display:"flex",gap:8,marginBottom:12}}>
-              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search tasks..." style={{flex:1,padding:"9px 12px",borderRadius:10,border:`1px solid ${C.border}`,fontSize:12,background:C.white,outline:"none"}}/>
-              <select value={filterPri} onChange={e=>setFilterPri(e.target.value)} style={{padding:"9px 10px",borderRadius:10,border:`1px solid ${C.border}`,fontSize:12,background:C.white,outline:"none"}}>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search tasks..." style={{flex:1,padding:"9px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:12,background:C.white,outline:"none"}}/>
+              <select value={filterPri} onChange={e=>setFilterPri(e.target.value)} style={{padding:"9px 10px",borderRadius:10,border:"1px solid "+C.border,fontSize:12,background:C.white,outline:"none"}}>
                 {["All","High","Medium","Low"].map(o=><option key={o} value={o}>{o}</option>)}
               </select>
             </div>
-            {filteredTasks.length===0&&<div style={{...card,textAlign:"center",padding:32}}><div style={{fontSize:32}}>📋</div><p style={{color:C.muted,fontSize:13,marginTop:8}}>No matching tasks.</p></div>}
+            {filteredTasks.length===0&&<div style={Object.assign({},card,{textAlign:"center",padding:32})}><div style={{fontSize:32}}>📋</div><p style={{color:C.muted,fontSize:13,marginTop:8}}>No matching tasks.</p></div>}
             {filteredTasks.map(t=>(
-              <div key={t.id} style={{background:C.white,borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:6,marginBottom:10,opacity:t.done?0.6:1}}>
-                <div onClick={()=>toggleTaskDone(t)} style={{width:20,height:20,borderRadius:6,border:`2px solid ${t.done?C.blue:C.border}`,background:t.done?C.blue:"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
+              <div key={t.id} style={{background:C.white,borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:"1px solid "+C.border,display:"flex",alignItems:"center",gap:4,marginBottom:10,opacity:t.done?0.6:1,flexWrap:"wrap"}}>
+                <div onClick={()=>toggleTaskDone(t)} style={{width:20,height:20,borderRadius:6,border:"2px solid "+(t.done?C.blue:C.border),background:t.done?C.blue:"transparent",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
                   {t.done&&<span style={{color:"#fff",fontSize:11}}>✓</span>}
                 </div>
-                <div style={{flex:1,minWidth:0}} onClick={()=>openEditTask(t)}>
+                <div style={{flex:1,minWidth:100}} onClick={()=>openEditTask(t)}>
                   <div style={{fontSize:13,fontWeight:600,color:C.text,textDecoration:t.done?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.title}{t.repeat&&t.repeat!=="None"?" 🔁":""}</div>
                   <div style={{fontSize:11,color:C.muted,marginTop:2}}>Due {t.due} {t.time?"· "+t.time:""}</div>
                 </div>
                 <Badge label={t.priority} bg={PRI[t.priority].bg} col={PRI[t.priority].col}/>
-                <a href={waLink(`Reminder: "${t.title}" is due ${t.due}${t.time?" at "+t.time:""}`)} target="_blank" rel="noopener" style={{...iconBtn,textDecoration:"none"}}>📲</a>
+                {t.due!=="TBD"&&<a href={gcalLink(t.title,"ProDesk task reminder",t.due,t.time,30)} target="_blank" rel="noopener" style={Object.assign({},iconBtn,{textDecoration:"none"})}>📅</a>}
+                <a href={waLink('Reminder: "'+t.title+'" is due '+t.due+(t.time?" at "+t.time:""))} target="_blank" rel="noopener" style={Object.assign({},iconBtn,{textDecoration:"none"})}>📲</a>
                 <button onClick={()=>openEditTask(t)} style={iconBtn}>✏️</button>
-                <button onClick={()=>setTasks(ts=>ts.filter(x=>x.id!==t.id))} style={iconBtn}>🗑️</button>
+                <button onClick={()=>setTasks(function(ts){return ts.filter(function(x){return x.id!==t.id;});})} style={iconBtn}>🗑️</button>
               </div>
             ))}
           </div>
@@ -605,9 +720,9 @@ function MainApp({user,onLogout}){
           <div>
             <div style={card}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-                <button onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1);}else setCalMonth(m=>m-1);}} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.muted,padding:"4px 10px"}}>‹</button>
+                <button onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(calYear-1);}else setCalMonth(calMonth-1);}} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.muted,padding:"4px 10px"}}>‹</button>
                 <span style={{fontWeight:700,fontSize:14,color:C.text}}>{MONTH_NAMES[calMonth]} {calYear}</span>
-                <button onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1);}else setCalMonth(m=>m+1);}} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.muted,padding:"4px 10px"}}>›</button>
+                <button onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(calYear+1);}else setCalMonth(calMonth+1);}} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.muted,padding:"4px 10px"}}>›</button>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,textAlign:"center"}}>
                 {["M","T","W","T","F","S","S"].map((d,i)=><div key={i} style={{fontSize:10,fontWeight:700,color:C.muted,padding:"2px 0"}}>{d}</div>)}
@@ -628,16 +743,17 @@ function MainApp({user,onLogout}){
               </div>
               {meetings.length===0&&<p style={{fontSize:12,color:C.muted,textAlign:"center",padding:"8px 0"}}>No meetings scheduled.</p>}
               {meetings.map(m=>(
-                <div key={m.id} style={{display:"flex",gap:6,padding:"10px 12px",background:C.slateLight,borderRadius:12,borderLeft:`3px solid ${m.color}`,marginBottom:8,alignItems:"center"}}>
+                <div key={m.id} style={{display:"flex",gap:4,padding:"10px 12px",background:C.slateLight,borderRadius:12,borderLeft:"3px solid "+m.color,marginBottom:8,alignItems:"center",flexWrap:"wrap"}}>
                   <div style={{minWidth:40}}><div style={{fontSize:13,fontWeight:700,color:C.text}}>{m.time}</div></div>
-                  <div style={{flex:1,minWidth:0}} onClick={()=>openEditMeeting(m)}>
+                  <div style={{flex:1,minWidth:80}} onClick={()=>openEditMeeting(m)}>
                     <div style={{fontSize:13,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.title}{m.repeat&&m.repeat!=="None"?" 🔁":""}</div>
                     <div style={{fontSize:11,color:C.muted}}>{m.people} attendees</div>
                   </div>
-                  <a href={waLink(`Meeting reminder: "${m.title}" at ${m.time}`)} target="_blank" rel="noopener" style={{...iconBtn,textDecoration:"none"}}>📲</a>
+                  <a href={gcalLink(m.title,"ProDesk meeting - "+m.people+" attendees",new Date().toISOString().slice(0,10),m.time,60)} target="_blank" rel="noopener" style={Object.assign({},iconBtn,{textDecoration:"none"})}>📅</a>
+                  <a href={waLink('Meeting reminder: "'+m.title+'" at '+m.time)} target="_blank" rel="noopener" style={Object.assign({},iconBtn,{textDecoration:"none"})}>📲</a>
                   <button style={smBtn(m.color,"#fff")}>Join</button>
                   <button onClick={()=>openEditMeeting(m)} style={iconBtn}>✏️</button>
-                  <button onClick={()=>setMeetings(ms=>ms.filter(x=>x.id!==m.id))} style={iconBtn}>🗑️</button>
+                  <button onClick={()=>setMeetings(function(ms){return ms.filter(function(x){return x.id!==m.id;});})} style={iconBtn}>🗑️</button>
                 </div>
               ))}
             </div>
@@ -650,12 +766,12 @@ function MainApp({user,onLogout}){
               <span style={{fontSize:14,fontWeight:700,color:C.text}}>{team.length} Members</span>
               <button onClick={openNewMember} style={{background:C.blue,color:"#fff",border:"none",borderRadius:10,padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>+ Add</button>
             </div>
-            {team.length===0&&<div style={{...card,textAlign:"center",padding:32}}><div style={{fontSize:32}}>👥</div><p style={{color:C.muted,fontSize:13,marginTop:8}}>Add your first team member!</p></div>}
+            {team.length===0&&<div style={Object.assign({},card,{textAlign:"center",padding:32})}><div style={{fontSize:32}}>👥</div><p style={{color:C.muted,fontSize:13,marginTop:8}}>Add your first team member!</p></div>}
             {team.map(m=>(
-              <div key={m.id} style={{background:C.white,borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
+              <div key={m.id} style={{background:C.white,borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:"1px solid "+C.border,display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
                 <div style={{position:"relative"}}>
                   <Avatar init={m.init} size={40} bg={m.bg}/>
-                  <div onClick={()=>setTeam(tm=>tm.map(x=>x.id===m.id?{...x,online:!x.online}:x))} style={{position:"absolute",bottom:0,right:0,width:10,height:10,borderRadius:"50%",background:m.online?"#10B981":"#CBD5E1",border:"2px solid #fff",cursor:"pointer"}}/>
+                  <div onClick={()=>setTeam(function(tm){return tm.map(function(x){return x.id===m.id?Object.assign({},x,{online:!x.online}):x;});})} style={{position:"absolute",bottom:0,right:0,width:10,height:10,borderRadius:"50%",background:m.online?"#10B981":"#CBD5E1",border:"2px solid #fff",cursor:"pointer"}}/>
                 </div>
                 <div style={{flex:1,minWidth:0}} onClick={()=>openEditMember(m)}>
                   <div style={{fontSize:13,fontWeight:700,color:C.text}}>{m.name}</div>
@@ -663,7 +779,7 @@ function MainApp({user,onLogout}){
                 </div>
                 <button onClick={()=>setMsgTarget(m)} style={smBtn(C.blueLight,C.blue)}>Message</button>
                 <button onClick={()=>openEditMember(m)} style={iconBtn}>✏️</button>
-                <button onClick={()=>setTeam(tm=>tm.filter(x=>x.id!==m.id))} style={iconBtn}>🗑️</button>
+                <button onClick={()=>setTeam(function(tm){return tm.filter(function(x){return x.id!==m.id;});})} style={iconBtn}>🗑️</button>
               </div>
             ))}
           </div>
@@ -686,7 +802,7 @@ function MainApp({user,onLogout}){
             <div style={{fontSize:16,fontWeight:800,color:C.text,textAlign:"center",marginBottom:8}}>{alarm.title}</div>
             <div style={{fontSize:13,color:C.muted,textAlign:"center",marginBottom:24,lineHeight:1.5}}>{alarm.body}</div>
             <div style={{display:"flex",gap:10}}>
-              <button onClick={snoozeAlarm} style={{flex:1,background:C.amberBg,color:C.amber,border:`1px solid ${C.amber}`,borderRadius:12,padding:"12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>⏰ Snooze 15 min</button>
+              <button onClick={snoozeAlarm} style={{flex:1,background:C.amberBg,color:C.amber,border:"1px solid "+C.amber,borderRadius:12,padding:"12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>⏰ Snooze 15 min</button>
               <button onClick={dismissAlarm} style={{flex:1,background:C.blue,color:"#fff",border:"none",borderRadius:12,padding:"12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>✓ Dismiss</button>
             </div>
           </div>
@@ -695,11 +811,11 @@ function MainApp({user,onLogout}){
 
       {showNotifs&&(
         <Modal title="Notifications" onClose={()=>setShowNotifs(false)}>
-          <button onClick={()=>setNotifs(ns=>ns.map(n=>({...n,read:true})))} style={{fontSize:11,color:C.blue,background:"none",border:"none",cursor:"pointer",fontWeight:600,marginBottom:8,display:"block",marginLeft:"auto"}}>Mark all read</button>
+          <button onClick={()=>setNotifs(function(ns){return ns.map(function(n){return Object.assign({},n,{read:true});});})} style={{fontSize:11,color:C.blue,background:"none",border:"none",cursor:"pointer",fontWeight:600,marginBottom:8,display:"block",marginLeft:"auto"}}>Mark all read</button>
           {notifs.length===0&&<p style={{fontSize:12,color:C.muted,textAlign:"center"}}>No notifications.</p>}
           {notifs.map(n=>(
-            <div key={n.id} style={{display:"flex",gap:10,alignItems:"flex-start",padding:"10px 0",borderBottom:`1px solid ${C.border}`}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:n.read?"transparent":C.blue,marginTop:5,flexShrink:0,border:`1px solid ${n.read?C.border:C.blue}`}}/>
+            <div key={n.id} style={{display:"flex",gap:10,alignItems:"flex-start",padding:"10px 0",borderBottom:"1px solid "+C.border}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:n.read?"transparent":C.blue,marginTop:5,flexShrink:0,border:"1px solid "+(n.read?C.border:C.blue)}}/>
               <span style={{fontSize:13,color:n.read?C.muted:C.text,fontWeight:n.read?400:600}}>{n.text}</span>
             </div>
           ))}
@@ -737,7 +853,7 @@ function MainApp({user,onLogout}){
       )}
 
       {showTask&&(
-        <Modal title={editTaskId?"Edit Task":"New Task"} onClose={()=>{setShowTask(false);setEditTaskId(null);}}>
+        <Modal title={editTaskId?"Edit Task":"New Task"} onClose={()=>{setShowTask(false);setEditTaskId(null);if(recActive&&recording)recording.stop();setRecActive(false);}}>
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <FInput placeholder="Task title" value={nTitle} onChange={setNTitle}/>
             <FInput placeholder="Due date" value={nDue} onChange={setNDue} type="date"/>
@@ -747,12 +863,28 @@ function MainApp({user,onLogout}){
               <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>🔁 Repeat</div>
               <FSelect value={nRepeat} onChange={setNRepeat} options={REPEAT_OPTS}/>
             </div>
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                <span style={{fontSize:11,color:C.muted,fontWeight:600}}>📝 Notes</span>
+                <button onClick={()=>toggleVoice(setNNotes,nNotes)} style={{background:recActive?C.red:C.blueLight,color:recActive?"#fff":C.blue,border:"none",borderRadius:8,padding:"4px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>{recActive?"⏹ Stop":"🎤 Voice"}</button>
+              </div>
+              <textarea value={nNotes} onChange={e=>setNNotes(e.target.value)} placeholder="Type or use voice to add notes..." rows={4} style={{width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:13,color:C.text,background:C.slateLight,boxSizing:"border-box",outline:"none",resize:"vertical",fontFamily:"inherit"}}/>
+              {nNotes.trim().length>0&&(
+                <button onClick={()=>doSummarize(nNotes,setNSummary)} disabled={summarizing} style={{marginTop:6,background:C.greenBg,color:C.green,border:"none",borderRadius:8,padding:"6px 12px",fontSize:11,fontWeight:700,cursor:"pointer",opacity:summarizing?0.6:1}}>{summarizing?"✨ Summarizing...":"✨ AI Summarize"}</button>
+              )}
+              {nSummary&&(
+                <div style={{marginTop:8,background:C.greenBg,borderRadius:10,padding:10,fontSize:12,color:C.text,lineHeight:1.5}}>
+                  <div style={{fontWeight:700,color:C.green,fontSize:11,marginBottom:4}}>✨ Summary</div>
+                  {nSummary}
+                </div>
+              )}
+            </div>
             <button onClick={saveTask} style={sBtn(C.blue)}>{editTaskId?"Save Changes":"Add Task"}</button>
           </div>
         </Modal>
       )}
       {showMeeting&&(
-        <Modal title={editMeetingId?"Edit Meeting":"New Meeting"} onClose={()=>{setShowMeeting(false);setEditMeetingId(null);}}>
+        <Modal title={editMeetingId?"Edit Meeting":"New Meeting"} onClose={()=>{setShowMeeting(false);setEditMeetingId(null);if(recActive&&recording)recording.stop();setRecActive(false);}}>
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <FInput placeholder="Meeting title" value={mTitle} onChange={setMTitle}/>
             <FInput placeholder="Time" value={mTime} onChange={setMTime} type="time"/>
@@ -760,6 +892,22 @@ function MainApp({user,onLogout}){
             <div>
               <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>🔁 Repeat</div>
               <FSelect value={mRepeat} onChange={setMRepeat} options={REPEAT_OPTS}/>
+            </div>
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                <span style={{fontSize:11,color:C.muted,fontWeight:600}}>📝 Meeting Notes</span>
+                <button onClick={()=>toggleVoice(setMNotes,mNotes)} style={{background:recActive?C.red:C.blueLight,color:recActive?"#fff":C.blue,border:"none",borderRadius:8,padding:"4px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>{recActive?"⏹ Stop":"🎤 Voice"}</button>
+              </div>
+              <textarea value={mNotes} onChange={e=>setMNotes(e.target.value)} placeholder="Dictate or type meeting notes..." rows={4} style={{width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:13,color:C.text,background:C.slateLight,boxSizing:"border-box",outline:"none",resize:"vertical",fontFamily:"inherit"}}/>
+              {mNotes.trim().length>0&&(
+                <button onClick={()=>doSummarize(mNotes,setMSummary)} disabled={summarizing} style={{marginTop:6,background:C.greenBg,color:C.green,border:"none",borderRadius:8,padding:"6px 12px",fontSize:11,fontWeight:700,cursor:"pointer",opacity:summarizing?0.6:1}}>{summarizing?"✨ Summarizing...":"✨ AI Summarize"}</button>
+              )}
+              {mSummary&&(
+                <div style={{marginTop:8,background:C.greenBg,borderRadius:10,padding:10,fontSize:12,color:C.text,lineHeight:1.5}}>
+                  <div style={{fontWeight:700,color:C.green,fontSize:11,marginBottom:4}}>✨ Summary</div>
+                  {mSummary}
+                </div>
+              )}
             </div>
             <button onClick={saveMeeting} style={sBtn(C.blue)}>{editMeetingId?"Save Changes":"Add Meeting"}</button>
           </div>
@@ -780,11 +928,11 @@ function MainApp({user,onLogout}){
 }
 
 function Root(){
-  const [screen,setScreen]=useState(()=>localStore.get("pd_onboarded")?"loading":"onboarding");
+  const [screen,setScreen]=useState(function(){return localStore.get("pd_onboarded")?"loading":"onboarding";});
   const [user,setUser]=useState(null);
 
-  useEffect(()=>{
-    const unsub=window._auth.onAuthStateChanged(fbUser=>{
+  useEffect(function(){
+    const unsub=window._auth.onAuthStateChanged(function(fbUser){
       if(fbUser){
         setUser({uid:fbUser.uid,name:fbUser.displayName||fbUser.email.split("@")[0],email:fbUser.email});
         setScreen("app");
