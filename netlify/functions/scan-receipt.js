@@ -18,7 +18,7 @@ export default async (req) => {
     const prompt = "Look at this receipt image. Extract the TOTAL amount paid (just the final number, no currency symbol) and pick the single best matching category from this list: " + catList + ". Also extract the merchant/store name if visible. Respond ONLY with valid JSON in this exact format, nothing else: {\"amount\": 12.50, \"category\": \"Food\", \"merchant\": \"Store Name\"}. If you cannot read the amount clearly, use 0.";
 
     const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=" + apiKey,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
