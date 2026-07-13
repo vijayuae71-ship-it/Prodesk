@@ -223,6 +223,7 @@ function fileToBase64(file){
     reader.readAsDataURL(file);
   });
 }
+function startVoiceInput(onResult,onEnd){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){alert("Voice input isn't supported on this browser. Try Chrome.");return null;}
   const rec=new SR();
@@ -1192,4 +1193,4 @@ function Root(){
 ReactDOM.createRoot(document.getElementById("root")).render(<Root/>);
 </script>
 </body>
-</html>
+  </html>
