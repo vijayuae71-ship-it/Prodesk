@@ -20,7 +20,7 @@
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
 body{background:#CBD5E1;font-family:'Inter',system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:0;}
 ::-webkit-scrollbar{width:0;}
-input,select,button{font-family:inherit;}
+input,select,button,textarea{font-family:inherit;}
 </style>
 </head>
 <body>
@@ -50,6 +50,14 @@ const C={
 const PRI={High:{bg:C.redBg,col:C.red},Medium:{bg:C.amberBg,col:C.amber},Low:{bg:C.greenBg,col:C.green}};
 const REPEAT_OPTS=["None","Daily","Weekly","Monthly"];
 const MONTH_NAMES=["January","February","March","April","May","June","July","August","September","October","November","December"];
+const DEFAULT_CATEGORIES=["Food","Transport","Bills","Shopping","Health","Entertainment","Other"];
+const CAT_ICONS={Food:"🍔",Transport:"🚗",Bills:"🧾",Shopping:"🛍️",Health:"💊",Entertainment:"🎬",Other:"📦"};
+const CAT_COLORS=["#DC2626","#D97706","#059669","#1A56DB","#7C3AED","#0891B2","#64748B","#E11D48","#0D9488"];
+function catIcon(cat){return CAT_ICONS[cat]||"💰";}
+function catColor(cat,categories){
+  const idx=categories.indexOf(cat);
+  return CAT_COLORS[idx>=0?idx%CAT_COLORS.length:6];
+}
 
 const localStore={
   get:(k)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch(e){return null;}},
@@ -193,7 +201,28 @@ async function aiSummarize(text){
     return {ok:false,summary:extractiveSummary(text,3),fallback:true};
   }
 }
-function startVoiceInput(onResult,onEnd){
+async function scanReceipt(base64,mimeType,categories){
+  try{
+    const res=await fetch("/.netlify/functions/scan-receipt",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({image:base64,mimeType:mimeType,categories:categories})
+    });
+    const data=await res.json();
+    if(!res.ok) return {ok:false,error:data.error||"Scan failed"};
+    return {ok:true,amount:data.amount||0,category:data.category||categories[0],merchant:data.merchant||""};
+  }catch(e){
+    return {ok:false,error:e.message};
+  }
+}
+function fileToBase64(file){
+  return new Promise(function(resolve,reject){
+    const reader=new FileReader();
+    reader.onload=function(){resolve(reader.result.split(",")[1]);};
+    reader.onerror=reject;
+    reader.readAsDataURL(file);
+  });
+}
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){alert("Voice input isn't supported on this browser. Try Chrome.");return null;}
   const rec=new SR();
@@ -247,7 +276,7 @@ function Onboarding({onDone}){
   const steps=[
     {icon:"📋",title:"Manage Tasks",desc:"Create, prioritize and track all your personal and professional tasks in one place."},
     {icon:"📅",title:"Schedule Meetings",desc:"Organize your calendar, schedule meetings and never miss an important event."},
-    {icon:"👥",title:"Build Your Team",desc:"Add team members, message them and track who is online — all in one app."},
+    {icon:"💰",title:"Track Expenses",desc:"Log daily expenses by category and see exactly where your money goes."},
   ];
   return(
     <div style={{display:"flex",flexDirection:"column",height:"100%",background:C.white}}>
@@ -350,6 +379,7 @@ function MsgModal({member,userUid,onClose}){
 }
 
 function MainApp({user,onLogout}){
+  const today=new Date();
   const defaults={
     tasks:[
       {id:1,title:"Review onboarding docs",due:"2026-07-15",time:"09:00",priority:"High",done:false,repeat:"None"},
@@ -358,6 +388,8 @@ function MainApp({user,onLogout}){
     meetings:[{id:1,time:"10:00",title:"Team Kickoff",people:4,color:C.blue,repeat:"None"}],
     team:[],
     notifs:[],
+    expenses:[],
+    categories:DEFAULT_CATEGORIES.slice(),
   };
   const [tab,setTab]=useState(0);
   const [loaded,setLoaded]=useState(false);
@@ -365,6 +397,8 @@ function MainApp({user,onLogout}){
   const [meetings,setMeetingsRaw]=useState(defaults.meetings);
   const [team,setTeamRaw]=useState(defaults.team);
   const [notifs,setNotifsRaw]=useState(defaults.notifs);
+  const [expenses,setExpensesRaw]=useState(defaults.expenses);
+  const [categories,setCategoriesRaw]=useState(defaults.categories);
   const [loadErr,setLoadErr]=useState("");
 
   useEffect(function(){
@@ -376,6 +410,8 @@ function MainApp({user,onLogout}){
         setMeetingsRaw(d.meetings||defaults.meetings);
         setTeamRaw(d.team||defaults.team);
         setNotifsRaw(d.notifs||defaults.notifs);
+        setExpensesRaw(d.expenses||defaults.expenses);
+        setCategoriesRaw(d.categories||defaults.categories);
       } else {
         docRef.set(defaults);
       }
@@ -395,6 +431,8 @@ function MainApp({user,onLogout}){
   function setMeetings(fn){setMeetingsRaw(function(prev){const next=fn(prev);saveAll({meetings:next});return next;});}
   function setTeam(fn){setTeamRaw(function(prev){const next=fn(prev);saveAll({team:next});return next;});}
   function setNotifs(fn){setNotifsRaw(function(prev){const next=fn(prev);saveAll({notifs:next});return next;});}
+  function setExpenses(fn){setExpensesRaw(function(prev){const next=fn(prev);saveAll({expenses:next});return next;});}
+  function setCategories(fn){setCategoriesRaw(function(prev){const next=fn(prev);saveAll({categories:next});return next;});}
 
   const [showTask,setShowTask]=useState(false);
   const [showMeeting,setShowMeeting]=useState(false);
@@ -421,7 +459,7 @@ function MainApp({user,onLogout}){
     setSummarizing(false);
   }
 
-  function toggleVoice(setNotesFn,currentNotes){
+  function toggleVoice(setNotesFn){
     if(recActive){
       if(recording) recording.stop();
       setRecActive(false);
@@ -436,9 +474,79 @@ function MainApp({user,onLogout}){
 
   const [search,setSearch]=useState("");
   const [filterPri,setFilterPri]=useState("All");
-  const today=new Date();
   const [calYear,setCalYear]=useState(today.getFullYear());
   const [calMonth,setCalMonth]=useState(today.getMonth());
+
+  const [showExpense,setShowExpense]=useState(false);
+  const [showCatManage,setShowCatManage]=useState(false);
+  const [editExpenseId,setEditExpenseId]=useState(null);
+  const [exAmount,setExAmount]=useState("");
+  const [exCat,setExCat]=useState("Food");
+  const [exDate,setExDate]=useState("");
+  const [exNote,setExNote]=useState("");
+  const [newCatName,setNewCatName]=useState("");
+  const [expenseMonth,setExpenseMonth]=useState(today.getMonth());
+  const [expenseYear,setExpenseYear]=useState(today.getFullYear());
+  const [scanning,setScanning]=useState(false);
+  const [scanMerchant,setScanMerchant]=useState("");
+
+  async function handleReceiptPhoto(e){
+    const file=e.target.files[0];
+    if(!file)return;
+    setScanning(true);
+    setScanMerchant("");
+    try{
+      const base64=await fileToBase64(file);
+      const result=await scanReceipt(base64,file.type,categories);
+      if(result.ok){
+        if(result.amount>0) setExAmount(String(result.amount));
+        if(result.category) setExCat(result.category);
+        if(result.merchant){setScanMerchant(result.merchant);setExNote(result.merchant);}
+      } else {
+        alert("Couldn't read the receipt clearly. Please enter details manually.");
+      }
+    }catch(err){
+      alert("Scan failed. Please enter details manually.");
+    }
+    setScanning(false);
+    e.target.value="";
+  }
+
+  function openNewExpense(){
+    setEditExpenseId(null);setExAmount("");setExCat(categories[0]||"Other");
+    const d=new Date();setExDate(d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()));
+    setExNote("");setShowExpense(true);
+  }
+  function openEditExpense(e){setEditExpenseId(e.id);setExAmount(String(e.amount));setExCat(e.category);setExDate(e.date);setExNote(e.note||"");setShowExpense(true);}
+  function saveExpense(){
+    const amt=parseFloat(exAmount);
+    if(!amt||amt<=0||!exDate)return;
+    if(editExpenseId){
+      setExpenses(function(exs){return exs.map(function(e){return e.id===editExpenseId?Object.assign({},e,{amount:amt,category:exCat,date:exDate,note:exNote}):e;});});
+    } else {
+      setExpenses(function(exs){return exs.concat([{id:Date.now(),amount:amt,category:exCat,date:exDate,note:exNote}]);});
+    }
+    setShowExpense(false);setEditExpenseId(null);
+  }
+  function addCategory(){
+    if(!newCatName.trim())return;
+    if(categories.indexOf(newCatName.trim())===-1){
+      setCategories(function(cs){return cs.concat([newCatName.trim()]);});
+    }
+    setNewCatName("");
+  }
+  function deleteCategory(cat){
+    setCategories(function(cs){return cs.filter(function(c){return c!==cat;});});
+  }
+
+  const monthExpenses=expenses.filter(function(e){
+    const d=new Date(e.date);
+    return d.getMonth()===expenseMonth && d.getFullYear()===expenseYear;
+  }).sort(function(a,b){return new Date(b.date)-new Date(a.date);});
+  const monthTotal=monthExpenses.reduce(function(sum,e){return sum+e.amount;},0);
+  const catTotals={};
+  monthExpenses.forEach(function(e){catTotals[e.category]=(catTotals[e.category]||0)+e.amount;});
+  const sortedCatTotals=Object.keys(catTotals).map(function(c){return {cat:c,total:catTotals[c]};}).sort(function(a,b){return b.total-a.total;});
 
   const [alarm,setAlarm]=useState(null);
   const [notifStatus,setNotifStatus]=useState(("Notification" in window)?Notification.permission:"unsupported");
@@ -545,8 +653,8 @@ function MainApp({user,onLogout}){
   if(!loaded){
     return(
       <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",flexDirection:"column",gap:12,background:C.white}}>
-        <div style={{fontSize:36}}>☁️</div>
-        <p style={{color:C.muted,fontSize:13}}>Syncing your workspace...</p>
+        <div style={{fontSize:36}}>⚡</div>
+        <p style={{color:C.muted,fontSize:13}}>Loading your workspace...</p>
       </div>
     );
   }
@@ -600,9 +708,9 @@ function MainApp({user,onLogout}){
         </div>
       </div>
 
-      <div style={{background:C.white,borderBottom:"1px solid "+C.border,display:"flex"}}>
-        {["Dashboard","Tasks","Calendar","Team"].map((t,i)=>(
-          <button key={i} onClick={()=>setTab(i)} style={{flex:1,padding:"12px 4px",fontSize:11,fontWeight:tab===i?700:500,color:tab===i?C.blue:C.muted,background:"none",border:"none",cursor:"pointer",borderBottom:tab===i?"2.5px solid "+C.blue:"2.5px solid transparent"}}>
+      <div style={{background:C.white,borderBottom:"1px solid "+C.border,display:"flex",overflowX:"auto"}}>
+        {["Dashboard","Tasks","Calendar","Team","Expenses"].map((t,i)=>(
+          <button key={i} onClick={()=>setTab(i)} style={{flex:"1 0 auto",padding:"12px 10px",fontSize:11,fontWeight:tab===i?700:500,color:tab===i?C.blue:C.muted,background:"none",border:"none",cursor:"pointer",borderBottom:tab===i?"2.5px solid "+C.blue:"2.5px solid transparent",whiteSpace:"nowrap"}}>
             {t}
           </button>
         ))}
@@ -627,6 +735,24 @@ function MainApp({user,onLogout}){
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div style={card}>
+              <div style={row}>
+                <span style={{fontSize:13,fontWeight:700,color:C.text}}>This Month's Spending</span>
+                <button onClick={()=>setTab(4)} style={{fontSize:11,color:C.blue,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>View All</button>
+              </div>
+              <div style={{fontSize:24,fontWeight:800,color:C.text,marginBottom:8}}>{monthTotal.toFixed(2)}</div>
+              {sortedCatTotals.length===0&&<p style={{fontSize:12,color:C.muted}}>No expenses logged yet this month.</p>}
+              {sortedCatTotals.slice(0,3).map(function(ct){
+                return (
+                  <div key={ct.cat} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                    <span style={{fontSize:14}}>{catIcon(ct.cat)}</span>
+                    <span style={{fontSize:12,color:C.text,flex:1}}>{ct.cat}</span>
+                    <span style={{fontSize:12,fontWeight:700,color:C.text}}>{ct.total.toFixed(2)}</span>
+                  </div>
+                );
+              })}
             </div>
 
             <div style={card}>
@@ -671,8 +797,8 @@ function MainApp({user,onLogout}){
                 {[
                   {icon:"📋",label:"New Task",bg:C.blueLight,col:C.blue,action:openNewTask},
                   {icon:"📅",label:"Schedule",bg:"#F0FDF4",col:C.green,action:openNewMeeting},
+                  {icon:"💰",label:"Add Expense",bg:C.amberBg,col:C.amber,action:openNewExpense},
                   {icon:"👥",label:"Add Member",bg:"#F5F3FF",col:C.purple,action:openNewMember},
-                  {icon:"👤",label:"Profile",bg:C.amberBg,col:C.amber,action:()=>setShowProfile(true)},
                 ].map((a,i)=>(
                   <button key={i} onClick={a.action} style={{background:a.bg,border:"1px solid "+a.col+"22",borderRadius:12,padding:"12px",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
                     <span style={{fontSize:18}}>{a.icon}</span>
@@ -784,11 +910,70 @@ function MainApp({user,onLogout}){
             ))}
           </div>
         )}
+
+        {tab===4&&(
+          <div>
+            <div style={card}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                <button onClick={()=>{if(expenseMonth===0){setExpenseMonth(11);setExpenseYear(expenseYear-1);}else setExpenseMonth(expenseMonth-1);}} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.muted,padding:"4px 10px"}}>‹</button>
+                <span style={{fontWeight:700,fontSize:14,color:C.text}}>{MONTH_NAMES[expenseMonth]} {expenseYear}</span>
+                <button onClick={()=>{if(expenseMonth===11){setExpenseMonth(0);setExpenseYear(expenseYear+1);}else setExpenseMonth(expenseMonth+1);}} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:C.muted,padding:"4px 10px"}}>›</button>
+              </div>
+              <div style={{textAlign:"center",padding:"8px 0"}}>
+                <div style={{fontSize:11,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.05em"}}>Total Spent</div>
+                <div style={{fontSize:32,fontWeight:800,color:C.text,marginTop:4}}>{monthTotal.toFixed(2)}</div>
+              </div>
+            </div>
+
+            {sortedCatTotals.length>0&&(
+              <div style={card}>
+                <span style={{fontSize:13,fontWeight:700,color:C.text}}>By Category</span>
+                <div style={{marginTop:10}}>
+                  {sortedCatTotals.map(function(ct){
+                    const pct=monthTotal>0?Math.round((ct.total/monthTotal)*100):0;
+                    return (
+                      <div key={ct.cat} style={{marginBottom:10}}>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                          <span style={{fontSize:12,color:C.text,fontWeight:600}}>{catIcon(ct.cat)} {ct.cat}</span>
+                          <span style={{fontSize:12,color:C.muted}}>{ct.total.toFixed(2)} ({pct}%)</span>
+                        </div>
+                        <div style={{background:C.slateLight,borderRadius:6,height:6,overflow:"hidden"}}>
+                          <div style={{background:catColor(ct.cat,categories),height:"100%",width:pct+"%",borderRadius:6}}/>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <span style={{fontSize:14,fontWeight:700,color:C.text}}>{monthExpenses.length} Expenses</span>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>setShowCatManage(true)} style={{background:C.slateLight,color:C.text,border:"none",borderRadius:10,padding:"6px 12px",fontSize:11,fontWeight:700,cursor:"pointer"}}>🏷️ Categories</button>
+                <button onClick={openNewExpense} style={{background:C.blue,color:"#fff",border:"none",borderRadius:10,padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>+ Add</button>
+              </div>
+            </div>
+            {monthExpenses.length===0&&<div style={Object.assign({},card,{textAlign:"center",padding:32})}><div style={{fontSize:32}}>💰</div><p style={{color:C.muted,fontSize:13,marginTop:8}}>No expenses this month yet.</p></div>}
+            {monthExpenses.map(e=>(
+              <div key={e.id} style={{background:C.white,borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",border:"1px solid "+C.border,display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                <div style={{width:36,height:36,borderRadius:10,background:catColor(e.category,categories)+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{catIcon(e.category)}</div>
+                <div style={{flex:1,minWidth:0}} onClick={()=>openEditExpense(e)}>
+                  <div style={{fontSize:13,fontWeight:600,color:C.text}}>{e.category}{e.note?" · "+e.note:""}</div>
+                  <div style={{fontSize:11,color:C.muted,marginTop:2}}>{e.date}</div>
+                </div>
+                <div style={{fontSize:14,fontWeight:800,color:C.text}}>{e.amount.toFixed(2)}</div>
+                <button onClick={()=>openEditExpense(e)} style={iconBtn}>✏️</button>
+                <button onClick={()=>setExpenses(function(exs){return exs.filter(function(x){return x.id!==e.id;});})} style={iconBtn}>🗑️</button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div style={{position:"absolute",bottom:0,left:0,right:0,background:C.navy,display:"flex",justifyContent:"space-around",padding:"8px 0 16px",borderTop:"1px solid rgba(255,255,255,0.08)"}}>
-        {[{icon:"⊞",label:"Home"},{icon:"✓",label:"Tasks"},{icon:"📅",label:"Cal"},{icon:"👥",label:"Team"}].map((n,i)=>(
-          <button key={i} onClick={()=>setTab(i)} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,background:"none",border:"none",cursor:"pointer",padding:"6px 12px",color:tab===i?C.blue:"rgba(255,255,255,0.5)"}}>
+      <div style={{position:"absolute",bottom:0,left:0,right:0,background:C.navy,display:"flex",justifyContent:"space-around",padding:"8px 0 16px",borderTop:"1px solid rgba(255,255,255,0.08)",overflowX:"auto"}}>
+        {[{icon:"⊞",label:"Home"},{icon:"✓",label:"Tasks"},{icon:"📅",label:"Cal"},{icon:"👥",label:"Team"},{icon:"💰",label:"Money"}].map((n,i)=>(
+          <button key={i} onClick={()=>setTab(i)} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,background:"none",border:"none",cursor:"pointer",padding:"6px 10px",color:tab===i?C.blue:"rgba(255,255,255,0.5)",flexShrink:0}}>
             <span style={{fontSize:18}}>{n.icon}</span>
             <span style={{fontSize:9,fontWeight:tab===i?700:400,letterSpacing:"0.06em",textTransform:"uppercase"}}>{n.label}</span>
           </button>
@@ -866,7 +1051,7 @@ function MainApp({user,onLogout}){
             <div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
                 <span style={{fontSize:11,color:C.muted,fontWeight:600}}>📝 Notes</span>
-                <button onClick={()=>toggleVoice(setNNotes,nNotes)} style={{background:recActive?C.red:C.blueLight,color:recActive?"#fff":C.blue,border:"none",borderRadius:8,padding:"4px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>{recActive?"⏹ Stop":"🎤 Voice"}</button>
+                <button onClick={()=>toggleVoice(setNNotes)} style={{background:recActive?C.red:C.blueLight,color:recActive?"#fff":C.blue,border:"none",borderRadius:8,padding:"4px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>{recActive?"⏹ Stop":"🎤 Voice"}</button>
               </div>
               <textarea value={nNotes} onChange={e=>setNNotes(e.target.value)} placeholder="Type or use voice to add notes..." rows={4} style={{width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:13,color:C.text,background:C.slateLight,boxSizing:"border-box",outline:"none",resize:"vertical",fontFamily:"inherit"}}/>
               {nNotes.trim().length>0&&(
@@ -896,7 +1081,7 @@ function MainApp({user,onLogout}){
             <div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
                 <span style={{fontSize:11,color:C.muted,fontWeight:600}}>📝 Meeting Notes</span>
-                <button onClick={()=>toggleVoice(setMNotes,mNotes)} style={{background:recActive?C.red:C.blueLight,color:recActive?"#fff":C.blue,border:"none",borderRadius:8,padding:"4px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>{recActive?"⏹ Stop":"🎤 Voice"}</button>
+                <button onClick={()=>toggleVoice(setMNotes)} style={{background:recActive?C.red:C.blueLight,color:recActive?"#fff":C.blue,border:"none",borderRadius:8,padding:"4px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>{recActive?"⏹ Stop":"🎤 Voice"}</button>
               </div>
               <textarea value={mNotes} onChange={e=>setMNotes(e.target.value)} placeholder="Dictate or type meeting notes..." rows={4} style={{width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:13,color:C.text,background:C.slateLight,boxSizing:"border-box",outline:"none",resize:"vertical",fontFamily:"inherit"}}/>
               {mNotes.trim().length>0&&(
@@ -923,6 +1108,50 @@ function MainApp({user,onLogout}){
         </Modal>
       )}
       {msgTarget&&<MsgModal member={msgTarget} userUid={user.uid} onClose={()=>setMsgTarget(null)}/>}
+
+      {showExpense&&(
+        <Modal title={editExpenseId?"Edit Expense":"New Expense"} onClose={()=>{setShowExpense(false);setEditExpenseId(null);setScanMerchant("");}}>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {!editExpenseId&&(
+              <label style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:C.blueLight,color:C.blue,border:"2px dashed "+C.blue,borderRadius:12,padding:"14px",cursor:"pointer",fontWeight:700,fontSize:13}}>
+                {scanning?"📷 Reading receipt...":"📷 Scan Receipt Photo"}
+                <input type="file" accept="image/*" capture="environment" onChange={handleReceiptPhoto} disabled={scanning} style={{display:"none"}}/>
+              </label>
+            )}
+            {scanMerchant&&(
+              <div style={{fontSize:11,color:C.green,fontWeight:600,textAlign:"center"}}>✓ Detected: {scanMerchant}</div>
+            )}
+            <FInput placeholder="Amount" value={exAmount} onChange={setExAmount} type="number"/>
+            <div>
+              <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:4}}>Category</div>
+              <FSelect value={exCat} onChange={setExCat} options={categories}/>
+            </div>
+            <FInput placeholder="Date" value={exDate} onChange={setExDate} type="date"/>
+            <FInput placeholder="Note (optional)" value={exNote} onChange={setExNote}/>
+            <button onClick={saveExpense} style={sBtn(C.blue)}>{editExpenseId?"Save Changes":"Add Expense"}</button>
+          </div>
+        </Modal>
+      )}
+
+      {showCatManage&&(
+        <Modal title="Manage Categories" onClose={()=>setShowCatManage(false)}>
+          <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:14}}>
+            {categories.map(function(cat){
+              return (
+                <div key={cat} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:C.slateLight,borderRadius:10}}>
+                  <span style={{fontSize:16}}>{catIcon(cat)}</span>
+                  <span style={{flex:1,fontSize:13,color:C.text,fontWeight:600}}>{cat}</span>
+                  <button onClick={()=>deleteCategory(cat)} style={iconBtn}>🗑️</button>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <input value={newCatName} onChange={e=>setNewCatName(e.target.value)} placeholder="New category name" style={{flex:1,padding:"10px 12px",borderRadius:10,border:"1px solid "+C.border,fontSize:13,background:C.slateLight,outline:"none"}}/>
+            <button onClick={addCategory} style={{background:C.blue,color:"#fff",border:"none",borderRadius:10,padding:"10px 16px",cursor:"pointer",fontWeight:700,fontSize:13}}>+ Add</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -963,4 +1192,4 @@ function Root(){
 ReactDOM.createRoot(document.getElementById("root")).render(<Root/>);
 </script>
 </body>
-  </html>
+</html>
