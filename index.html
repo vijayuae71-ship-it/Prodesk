@@ -1114,10 +1114,18 @@ function MainApp({user,onLogout}){
         <Modal title={editExpenseId?"Edit Expense":"New Expense"} onClose={()=>{setShowExpense(false);setEditExpenseId(null);setScanMerchant("");}}>
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             {!editExpenseId&&(
-              <label style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,background:C.blueLight,color:C.blue,border:"2px dashed "+C.blue,borderRadius:12,padding:"14px",cursor:"pointer",fontWeight:700,fontSize:13}}>
-                {scanning?"📷 Reading receipt...":"📷 Scan Receipt Photo"}
-                <input type="file" accept="image/*" capture="environment" onChange={handleReceiptPhoto} disabled={scanning} style={{display:"none"}}/>
-              </label>
+              <div style={{display:"flex",gap:8}}>
+                <label style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,background:C.blueLight,color:C.blue,border:"2px dashed "+C.blue,borderRadius:12,padding:"14px 8px",cursor:"pointer",fontWeight:700,fontSize:12,textAlign:"center"}}>
+                  {scanning?"⏳":"📷"}
+                  <span>{scanning?"Reading...":"Take Photo"}</span>
+                  <input type="file" accept="image/*" capture="environment" onChange={handleReceiptPhoto} disabled={scanning} style={{display:"none"}}/>
+                </label>
+                <label style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,background:C.greenBg,color:C.green,border:"2px dashed "+C.green,borderRadius:12,padding:"14px 8px",cursor:"pointer",fontWeight:700,fontSize:12,textAlign:"center"}}>
+                  {scanning?"⏳":"🖼️"}
+                  <span>{scanning?"Reading...":"From Gallery"}</span>
+                  <input type="file" accept="image/*" onChange={handleReceiptPhoto} disabled={scanning} style={{display:"none"}}/>
+                </label>
+              </div>
             )}
             {scanMerchant&&(
               <div style={{fontSize:11,color:C.green,fontWeight:600,textAlign:"center"}}>✓ Detected: {scanMerchant}</div>
