@@ -9,7 +9,7 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "No image provided" }), { status: 400 });
     }
 
-    const apiKey = Deno.env.get("GEMINI_API_KEY") || process.env.GEMINI_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       return new Response(JSON.stringify({ error: "Server not configured" }), { status: 500 });
     }
