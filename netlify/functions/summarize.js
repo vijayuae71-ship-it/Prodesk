@@ -17,7 +17,7 @@ export default async (req) => {
     const prompt = "Summarize the following meeting or task notes in 2-4 clear, concise sentences. Focus on key points, decisions, and action items. Notes:\n\n" + text;
 
     const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=" + apiKey,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
