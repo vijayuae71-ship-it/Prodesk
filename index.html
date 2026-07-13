@@ -209,10 +209,10 @@ async function scanReceipt(base64,mimeType,categories){
       body:JSON.stringify({image:base64,mimeType:mimeType,categories:categories})
     });
     const data=await res.json();
-    if(!res.ok) return {ok:false,error:data.error||"Scan failed"};
+    if(!res.ok) return {ok:false,error:(data.error||"Scan failed")+" (status "+res.status+")"};
     return {ok:true,amount:data.amount||0,category:data.category||categories[0],merchant:data.merchant||""};
   }catch(e){
-    return {ok:false,error:e.message};
+    return {ok:false,error:"Network error: "+e.message};
   }
 }
 function fileToBase64(file){
@@ -504,10 +504,10 @@ function MainApp({user,onLogout}){
         if(result.category) setExCat(result.category);
         if(result.merchant){setScanMerchant(result.merchant);setExNote(result.merchant);}
       } else {
-        alert("Couldn't read the receipt clearly. Please enter details manually.");
+        alert("Scan error: "+(result.error||"unknown"));
       }
     }catch(err){
-      alert("Scan failed. Please enter details manually.");
+      alert("Scan failed: "+err.message);
     }
     setScanning(false);
     e.target.value="";
@@ -1201,4 +1201,4 @@ function Root(){
 ReactDOM.createRoot(document.getElementById("root")).render(<Root/>);
 </script>
 </body>
-  </html>
+</html>
